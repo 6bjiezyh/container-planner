@@ -14,6 +14,7 @@ export type DimensionInputMode = 'outer_box' | 'estimate'
 export type SupplierFlag = 'self' | 'other'
 export type PackagingVisualType = 'none' | 'foam' | 'paper' | 'wood_frame' | 'wood_crate'
 export type SplitMode = 'mixed' | 'separate_suppliers'
+export type LoadPriority = 'self_first' | 'other_first' | 'balanced'
 
 export interface ItemInput {
   id: string
@@ -52,6 +53,15 @@ export interface Dimension3D {
   heightCm: number
 }
 
+export interface RemainingSpaceInput extends Dimension3D {
+  enabled: boolean
+}
+
+export interface PackingSpace extends Dimension3D {
+  originXCm: number
+  label: string
+}
+
 export interface Placement {
   itemId: string
   label: string
@@ -59,7 +69,10 @@ export interface Placement {
   fragile: boolean
   supplierFlag: SupplierFlag
   singleWeightKg: number
+  productCode: string
   boxNo: string
+  boxCount: number
+  declaredQuantity: number
   piNo: string
   packagingVisualType: PackagingVisualType
   lengthCm: number
@@ -75,6 +88,7 @@ export interface Placement {
 export interface ContainerPlan {
   containerType: ContainerType
   container: Dimension3D
+  packingSpace: PackingSpace
   fits: boolean
   summary: {
     totalUnits: number
@@ -96,7 +110,10 @@ export interface ExpandedUnitPreview {
   fragile: boolean
   supplierFlag: SupplierFlag
   singleWeightKg: number
+  productCode: string
   boxNo: string
+  boxCount: number
+  declaredQuantity: number
   piNo: string
   packagingVisualType: PackagingVisualType
   bare: Dimension3D
@@ -121,6 +138,7 @@ export interface MultiContainerBatch {
 export interface MultiContainerPlan {
   containerType: ContainerType
   container: Dimension3D
+  packingSpace: PackingSpace
   batches: MultiContainerBatch[]
   unpackedItems: Array<{ itemId: string; label: string; index: number }>
   summary: {
@@ -148,6 +166,11 @@ export interface PackingSequenceStep {
   index: number
   supplierFlag: SupplierFlag
   fragile: boolean
+  productCode: string
+  boxNo: string
+  boxCount: number
+  declaredQuantity: number
+  piNo: string
   packagingVisualType: PackagingVisualType
   packed: Dimension3D
   note: string
@@ -182,22 +205,99 @@ const PACKAGING_RULES: Record<PackagingType, Dimension3D> = {
   wood_crate: { lengthCm: 12, widthCm: 12, heightCm: 17 },
 }
 
-const PACKING_STRATEGIES: Array<{
+function getPackedFootprint(unit: Pick<ExpandedUnit, 'packed'>) {
+  return unit.packed.lengthCm * unit.packed.widthCm
+}
+
+function getPackedVolume(unit: Pick<ExpandedUnit, 'packed'>) {
+  return calculateItemCbm(unit.packed)
+}
+
+function compareBusinessPriority(
+  a: ExpandedUnit,
+  b: ExpandedUnit,
+  loadPriority: LoadPriority = 'self_first',
+) {
+  const supplierDiff = supplierPriority(a, loadPriority) - supplierPriority(b, loadPriority)
+  if (supplierDiff !== 0) return supplierDiff
+
+  const fragileDiff = Number(a.fragile) - Number(b.fragile)
+  if (fragileDiff !== 0) return fragileDiff
+
+  const weightDiff = b.singleWeightKg - a.singleWeightKg
+  if (weightDiff !== 0) return weightDiff
+
+  const heightDiff = b.packed.heightCm - a.packed.heightCm
+  if (heightDiff !== 0) return heightDiff
+
+  const footprintDiff = getPackedFootprint(b) - getPackedFootprint(a)
+  if (footprintDiff !== 0) return footprintDiff
+
+  return getPackedVolume(b) - getPackedVolume(a)
+}
+
+function getPackingStrategies(loadPriority: LoadPriority): Array<{
   id: string
   label: string
   sorter: (a: ExpandedUnit, b: ExpandedUnit) => number
-}> = [
+}> {
+  return [
+  {
+    id: 'inside-heavy-tall',
+    label:
+      loadPriority === 'other_first'
+        ? '里到外 · 第三方优先 · 重件高件优先'
+        : loadPriority === 'balanced'
+          ? '里到外 · 平衡混装 · 重件高件优先'
+          : '里到外 · 己方优先 · 重件高件优先',
+    sorter: (a, b) =>
+      compareBusinessPriority(a, b, loadPriority) ||
+      b.packed.lengthCm - a.packed.lengthCm ||
+      b.packed.widthCm - a.packed.widthCm,
+  },
+  {
+    id: 'inside-footprint-heavy',
+    label:
+      loadPriority === 'other_first'
+        ? '里到外 · 第三方优先 · 底盘重件优先'
+        : loadPriority === 'balanced'
+          ? '里到外 · 平衡混装 · 底盘重件优先'
+          : '里到外 · 己方优先 · 底盘重件优先',
+    sorter: (a, b) =>
+      supplierPriority(a, loadPriority) - supplierPriority(b, loadPriority) ||
+      Number(a.fragile) - Number(b.fragile) ||
+      getPackedFootprint(b) - getPackedFootprint(a) ||
+      b.singleWeightKg - a.singleWeightKg ||
+      b.packed.heightCm - a.packed.heightCm ||
+      getPackedVolume(b) - getPackedVolume(a),
+  },
+  {
+    id: 'inside-tall-stack',
+    label:
+      loadPriority === 'other_first'
+        ? '里到外 · 第三方优先 · 高件堆叠优先'
+        : loadPriority === 'balanced'
+          ? '里到外 · 平衡混装 · 高件堆叠优先'
+          : '里到外 · 己方优先 · 高件堆叠优先',
+    sorter: (a, b) =>
+      supplierPriority(a, loadPriority) - supplierPriority(b, loadPriority) ||
+      Number(a.fragile) - Number(b.fragile) ||
+      b.packed.heightCm - a.packed.heightCm ||
+      b.singleWeightKg - a.singleWeightKg ||
+      getPackedFootprint(b) - getPackedFootprint(a) ||
+      getPackedVolume(b) - getPackedVolume(a),
+  },
   {
     id: 'volume-desc',
     label: '体积优先',
     sorter: (a, b) => {
-      const volumeDiff = calculateItemCbm(b.packed) - calculateItemCbm(a.packed)
+      const volumeDiff = getPackedVolume(b) - getPackedVolume(a)
       if (volumeDiff !== 0) return volumeDiff
-      const supplierDiff = supplierPriority(a) - supplierPriority(b)
+      const supplierDiff = supplierPriority(a, loadPriority) - supplierPriority(b, loadPriority)
       if (supplierDiff !== 0) return supplierDiff
       const weightDiff = b.singleWeightKg - a.singleWeightKg
       if (weightDiff !== 0) return weightDiff
-      return b.packed.widthCm * b.packed.lengthCm - a.packed.widthCm * a.packed.lengthCm
+      return getPackedFootprint(b) - getPackedFootprint(a)
     },
   },
   {
@@ -205,47 +305,48 @@ const PACKING_STRATEGIES: Array<{
     label: '高度优先',
     sorter: (a, b) =>
       b.packed.heightCm - a.packed.heightCm ||
-      supplierPriority(a) - supplierPriority(b) ||
+      supplierPriority(a, loadPriority) - supplierPriority(b, loadPriority) ||
       b.singleWeightKg - a.singleWeightKg ||
-      calculateItemCbm(b.packed) - calculateItemCbm(a.packed),
+      getPackedVolume(b) - getPackedVolume(a),
   },
   {
     id: 'footprint-desc',
     label: '底面积优先',
     sorter: (a, b) =>
-      b.packed.lengthCm * b.packed.widthCm - a.packed.lengthCm * a.packed.widthCm ||
-      supplierPriority(a) - supplierPriority(b) ||
+      getPackedFootprint(b) - getPackedFootprint(a) ||
+      supplierPriority(a, loadPriority) - supplierPriority(b, loadPriority) ||
       b.singleWeightKg - a.singleWeightKg ||
-      calculateItemCbm(b.packed) - calculateItemCbm(a.packed),
+      getPackedVolume(b) - getPackedVolume(a),
   },
   {
     id: 'width-desc',
     label: '宽度优先',
     sorter: (a, b) =>
       b.packed.widthCm - a.packed.widthCm ||
-      supplierPriority(a) - supplierPriority(b) ||
+      supplierPriority(a, loadPriority) - supplierPriority(b, loadPriority) ||
       b.singleWeightKg - a.singleWeightKg ||
-      calculateItemCbm(b.packed) - calculateItemCbm(a.packed),
+      getPackedVolume(b) - getPackedVolume(a),
   },
   {
     id: 'length-desc',
     label: '长度优先',
     sorter: (a, b) =>
       b.packed.lengthCm - a.packed.lengthCm ||
-      supplierPriority(a) - supplierPriority(b) ||
+      supplierPriority(a, loadPriority) - supplierPriority(b, loadPriority) ||
       b.singleWeightKg - a.singleWeightKg ||
-      calculateItemCbm(b.packed) - calculateItemCbm(a.packed),
+      getPackedVolume(b) - getPackedVolume(a),
   },
   {
     id: 'height-asc',
     label: '低矮件优先',
     sorter: (a, b) =>
       a.packed.heightCm - b.packed.heightCm ||
-      supplierPriority(a) - supplierPriority(b) ||
+      supplierPriority(a, loadPriority) - supplierPriority(b, loadPriority) ||
       b.singleWeightKg - a.singleWeightKg ||
-      calculateItemCbm(b.packed) - calculateItemCbm(a.packed),
+      getPackedVolume(b) - getPackedVolume(a),
   },
 ]
+}
 
 export function getContainerDimensions(
   containerType: ContainerType,
@@ -260,6 +361,34 @@ export function getContainerDimensions(
 
 export function getContainerLabel(containerType: ContainerType) {
   return containerType === 'CUSTOM' ? '自定义柜型' : containerType
+}
+
+export function resolvePackingSpace({
+  container,
+  remainingSpace,
+}: {
+  container: Dimension3D
+  remainingSpace?: RemainingSpaceInput
+}): PackingSpace {
+  if (!remainingSpace?.enabled) {
+    return {
+      ...container,
+      originXCm: 0,
+      label: '完整货柜',
+    }
+  }
+
+  const lengthCm = Math.max(1, Math.min(container.lengthCm, remainingSpace.lengthCm))
+  const widthCm = Math.max(1, Math.min(container.widthCm, remainingSpace.widthCm))
+  const heightCm = Math.max(1, Math.min(container.heightCm, remainingSpace.heightCm))
+
+  return {
+    lengthCm,
+    widthCm,
+    heightCm,
+    originXCm: Math.max(container.lengthCm - lengthCm, 0),
+    label: '入口剩余空间',
+  }
 }
 
 export function calculateItemCbm({
@@ -295,20 +424,29 @@ export function resolveItemDimensions(item: ItemInput): {
     heightCm: item.heightCm,
   }
 
+  const woodThicknessCm =
+    item.packagingType === 'wood_crate'
+      ? (item.woodThicknessCm ?? 3)
+      : item.packagingType === 'wood_frame'
+        ? (item.woodThicknessCm ?? 2)
+        : 0
+  const woodExpansion = item.packagingType === 'none' ? 0 : woodThicknessCm * 2
+  const supportFeet = item.packagingType === 'none' ? 0 : 5
+
   if (item.dimensionInputMode === 'outer_box') {
     return {
       input,
-      packed: input,
+      packed: {
+        lengthCm: input.lengthCm + woodExpansion,
+        widthCm: input.widthCm + woodExpansion,
+        heightCm: input.heightCm + woodExpansion + supportFeet,
+      },
     }
   }
 
-  const woodThicknessCm =
-    item.packagingType === 'wood_crate' ? (item.woodThicknessCm ?? 3) : item.packagingType === 'wood_frame' ? (item.woodThicknessCm ?? 2) : 0
-  const woodExpansion = item.packagingType === 'none' ? 0 : woodThicknessCm * 2
   const cartonExpansion = item.cartonEnabled ? item.cartonThicknessCm * 2 : 0
   const foamExpansion = item.foamEnabled ? item.foamThicknessCm * 2 : 0
   const packagingExpansion = woodExpansion + cartonExpansion + foamExpansion
-  const supportFeet = item.packagingType === 'none' ? 0 : 5
 
   return {
     input,
@@ -320,9 +458,12 @@ export function resolveItemDimensions(item: ItemInput): {
   }
 }
 
-export function getPackagingVisualType(item: Pick<ItemInput, 'packagingType' | 'cartonEnabled' | 'foamEnabled'>): PackagingVisualType {
+export function getPackagingVisualType(
+  item: Pick<ItemInput, 'packagingType' | 'cartonEnabled' | 'foamEnabled' | 'dimensionInputMode'>,
+): PackagingVisualType {
   if (item.packagingType === 'wood_crate') return 'wood_crate'
   if (item.packagingType === 'wood_frame') return 'wood_frame'
+  if (item.dimensionInputMode === 'outer_box') return 'paper'
   if (item.cartonEnabled) return 'paper'
   if (item.foamEnabled) return 'foam'
   return 'none'
@@ -335,7 +476,10 @@ type ExpandedUnit = {
   fragile: boolean
   supplierFlag: SupplierFlag
   singleWeightKg: number
+  productCode: string
   boxNo: string
+  boxCount: number
+  declaredQuantity: number
   piNo: string
   packagingVisualType: PackagingVisualType
   bare: Dimension3D
@@ -355,7 +499,10 @@ type CandidatePlacement = {
   fragile: boolean
   supplierFlag: SupplierFlag
   singleWeightKg: number
+  productCode: string
   boxNo: string
+  boxCount: number
+  declaredQuantity: number
   piNo: string
   packagingVisualType: PackagingVisualType
   lengthCm: number
@@ -377,12 +524,22 @@ export function calculateContainerPlan({
   containerType,
   items,
   customContainer,
+  remainingSpace,
+  loadPriority = 'self_first',
 }: {
   containerType: ContainerType
   items: ItemInput[]
   customContainer?: Dimension3D
+  remainingSpace?: RemainingSpaceInput
+  loadPriority?: LoadPriority
 }): ContainerPlan {
-  return generateContainerPlanCandidates({ containerType, items, customContainer })[0].plan
+  return generateContainerPlanCandidates({
+    containerType,
+    items,
+    customContainer,
+    remainingSpace,
+    loadPriority,
+  })[0].plan
 }
 
 export function calculateContainerPlanWithSequence({
@@ -390,20 +547,25 @@ export function calculateContainerPlanWithSequence({
   items,
   orderedUnitKeys,
   customContainer,
+  remainingSpace,
+  loadPriority = 'self_first',
 }: {
   containerType: ContainerType
   items: ItemInput[]
   orderedUnitKeys: string[]
   customContainer?: Dimension3D
+  remainingSpace?: RemainingSpaceInput
+  loadPriority?: LoadPriority
 }): ContainerPlan {
   const container = getContainerDimensions(containerType, customContainer)
+  const packingSpace = resolvePackingSpace({ container, remainingSpace })
   const units = expandUnits(items)
   const bareCbm = units.reduce((sum, unit) => sum + calculateItemCbm(unit.bare), 0)
   const packedCbm = units.reduce(
     (sum, unit) => sum + calculateItemCbm(unit.packed),
     0,
   )
-  const containerCbm = calculateItemCbm(container)
+  const containerCbm = calculateItemCbm(packingSpace)
 
   const unitsByKey = new Map<string, ExpandedUnit>(
     units.map((unit) => [`${unit.itemId}-${unit.index}`, unit] as const),
@@ -428,11 +590,12 @@ export function calculateContainerPlanWithSequence({
     orderedUnits.push(unit)
   }
 
-  const candidate = buildPlanForOrderedUnits(container, orderedUnits)
+  const candidate = buildPlanForOrderedUnits(packingSpace, orderedUnits, loadPriority)
 
   return {
     containerType,
     container,
+    packingSpace,
     fits: candidate.unpackedItems.length === 0,
     summary: {
       totalUnits: units.length,
@@ -456,7 +619,10 @@ export function getExpandedUnitPreview(items: ItemInput[]): ExpandedUnitPreview[
     fragile: unit.fragile,
     supplierFlag: unit.supplierFlag,
     singleWeightKg: unit.singleWeightKg,
+    productCode: unit.productCode,
     boxNo: unit.boxNo,
+    boxCount: unit.boxCount,
+    declaredQuantity: unit.declaredQuantity,
     piNo: unit.piNo,
     packagingVisualType: unit.packagingVisualType,
     bare: unit.bare,
@@ -464,17 +630,16 @@ export function getExpandedUnitPreview(items: ItemInput[]): ExpandedUnitPreview[
   }))
 }
 
-export function generatePackingSequence(items: ItemInput[]): PackingSequenceStep[] {
+export function generatePackingSequence(
+  items: ItemInput[],
+  loadPriority: LoadPriority = 'self_first',
+): PackingSequenceStep[] {
   return expandUnits(items)
     .sort((a, b) => {
       const packagingDiff = getPackagingPriority(b.packagingVisualType) - getPackagingPriority(a.packagingVisualType)
       if (packagingDiff !== 0) return packagingDiff
-      const supplierDiff = supplierPriority(a) - supplierPriority(b)
-      if (supplierDiff !== 0) return supplierDiff
-      const fragileDiff = Number(a.fragile) - Number(b.fragile)
-      if (fragileDiff !== 0) return fragileDiff
-      const volumeDiff = calculateItemCbm(b.packed) - calculateItemCbm(a.packed)
-      if (volumeDiff !== 0) return volumeDiff
+      const businessDiff = compareBusinessPriority(a, b, loadPriority)
+      if (businessDiff !== 0) return businessDiff
       return a.index - b.index
     })
     .map((unit) => ({
@@ -484,6 +649,11 @@ export function generatePackingSequence(items: ItemInput[]): PackingSequenceStep
       index: unit.index,
       supplierFlag: unit.supplierFlag,
       fragile: unit.fragile,
+      productCode: unit.productCode,
+      boxNo: unit.boxNo,
+      boxCount: unit.boxCount,
+      declaredQuantity: unit.declaredQuantity,
+      piNo: unit.piNo,
       packagingVisualType: unit.packagingVisualType,
       packed: unit.packed,
       note: buildPackingNote(unit),
@@ -493,15 +663,21 @@ export function generatePackingSequence(items: ItemInput[]): PackingSequenceStep
 export function recommendContainerPlans({
   items,
   splitMode = 'mixed',
+  remainingSpace,
+  loadPriority = 'self_first',
 }: {
   items: ItemInput[]
   splitMode?: SplitMode
+  remainingSpace?: RemainingSpaceInput
+  loadPriority?: LoadPriority
 }): ContainerRecommendation[] {
   return RECOMMENDABLE_CONTAINERS.map((containerType) => {
     const plan = calculateMultiContainerPlan({
       containerType,
       items,
       splitMode,
+      remainingSpace,
+      loadPriority,
     })
 
     return {
@@ -521,10 +697,14 @@ export function generateContainerPlanCandidatesForUnits({
   containerType,
   units,
   customContainer,
+  remainingSpace,
+  loadPriority = 'self_first',
 }: {
   containerType: ContainerType
   units: ExpandedUnitPreview[]
   customContainer?: Dimension3D
+  remainingSpace?: RemainingSpaceInput
+  loadPriority?: LoadPriority
 }): ContainerPlanCandidate[] {
   const expandedUnits = units.map((unit) => ({
     itemId: unit.itemId,
@@ -533,7 +713,10 @@ export function generateContainerPlanCandidatesForUnits({
     fragile: unit.fragile,
     supplierFlag: unit.supplierFlag,
     singleWeightKg: unit.singleWeightKg,
+    productCode: unit.productCode,
     boxNo: unit.boxNo,
+    boxCount: unit.boxCount,
+    declaredQuantity: unit.declaredQuantity,
     piNo: unit.piNo,
     packagingVisualType: unit.packagingVisualType,
     bare: unit.bare,
@@ -544,6 +727,8 @@ export function generateContainerPlanCandidatesForUnits({
     containerType,
     expandedUnits,
     customContainer,
+    remainingSpace,
+    loadPriority,
   })
 }
 
@@ -552,11 +737,15 @@ export function calculateContainerPlanWithSequenceForUnits({
   units,
   orderedUnitKeys,
   customContainer,
+  remainingSpace,
+  loadPriority = 'self_first',
 }: {
   containerType: ContainerType
   units: ExpandedUnitPreview[]
   orderedUnitKeys: string[]
   customContainer?: Dimension3D
+  remainingSpace?: RemainingSpaceInput
+  loadPriority?: LoadPriority
 }): ContainerPlan {
   const unitsByKey = new Map(
     units.map((unit) => [
@@ -568,7 +757,10 @@ export function calculateContainerPlanWithSequenceForUnits({
         fragile: unit.fragile,
         supplierFlag: unit.supplierFlag,
         singleWeightKg: unit.singleWeightKg,
+        productCode: unit.productCode,
         boxNo: unit.boxNo,
+        boxCount: unit.boxCount,
+        declaredQuantity: unit.declaredQuantity,
         piNo: unit.piNo,
         packagingVisualType: unit.packagingVisualType,
         bare: unit.bare,
@@ -603,6 +795,8 @@ export function calculateContainerPlanWithSequenceForUnits({
     containerType,
     orderedUnits,
     customContainer,
+    remainingSpace,
+    loadPriority,
   })
 }
 
@@ -631,7 +825,7 @@ export function nudgePlacementInPlan({
     return null
   }
 
-  if (!isValidPlacementArrangement(nextPlacements, plan.container)) {
+  if (!isValidPlacementArrangement(nextPlacements, plan.packingSpace)) {
     return null
   }
 
@@ -652,21 +846,23 @@ export function calculateMultiContainerPlan({
   items,
   customContainer,
   splitMode = 'mixed',
+  remainingSpace,
+  loadPriority = 'self_first',
 }: {
   containerType: ContainerType
   items: ItemInput[]
   customContainer?: Dimension3D
   splitMode?: SplitMode
+  remainingSpace?: RemainingSpaceInput
+  loadPriority?: LoadPriority
 }): MultiContainerPlan {
   const container = getContainerDimensions(containerType, customContainer)
+  const packingSpace = resolvePackingSpace({ container, remainingSpace })
   const allUnits = getExpandedUnitPreview(items)
   const batches: MultiContainerBatch[] = []
   let remaining = [...allUnits]
   const pools = splitMode === 'separate_suppliers'
-    ? [
-        remaining.filter((unit) => unit.supplierFlag === 'self'),
-        remaining.filter((unit) => unit.supplierFlag === 'other'),
-      ].filter((pool) => pool.length > 0)
+    ? getSupplierPools(remaining, loadPriority)
     : [remaining]
 
   for (const pool of pools) {
@@ -677,6 +873,8 @@ export function calculateMultiContainerPlan({
         containerType,
         units: poolRemaining,
         customContainer,
+        remainingSpace,
+        loadPriority,
       })
       const best = candidates[0]
 
@@ -708,7 +906,7 @@ export function calculateMultiContainerPlan({
   const packedUnits = batches.reduce((sum, batch) => sum + batch.plan.placements.length, 0)
   const bareCbm = allUnits.reduce((sum, unit) => sum + calculateItemCbm(unit.bare), 0)
   const packedCbm = allUnits.reduce((sum, unit) => sum + calculateItemCbm(unit.packed), 0)
-  const containerCbm = calculateItemCbm(container)
+  const containerCbm = calculateItemCbm(packingSpace)
   const totalPlacedPackedCbm = batches.reduce(
     (sum, batch) => sum + batch.plan.summary.utilizationRatio * batch.plan.summary.containerCbm,
     0,
@@ -717,6 +915,7 @@ export function calculateMultiContainerPlan({
   return {
     containerType,
     container,
+    packingSpace,
     batches,
     unpackedItems: remaining.map((unit) => ({
       itemId: unit.itemId,
@@ -740,15 +939,21 @@ export function generateContainerPlanCandidates({
   containerType,
   items,
   customContainer,
+  remainingSpace,
+  loadPriority = 'self_first',
 }: {
   containerType: ContainerType
   items: ItemInput[]
   customContainer?: Dimension3D
+  remainingSpace?: RemainingSpaceInput
+  loadPriority?: LoadPriority
 }): ContainerPlanCandidate[] {
   return generateCandidatePlansFromExpandedUnits({
     containerType,
     expandedUnits: expandUnits(items),
     customContainer,
+    remainingSpace,
+    loadPriority,
   })
 }
 
@@ -765,7 +970,10 @@ function expandUnits(items: ItemInput[]): ExpandedUnit[] {
         fragile: item.fragile,
         supplierFlag: item.supplierFlag ?? 'self',
         singleWeightKg: item.singleWeightKg ?? 1,
+        productCode: item.productCode ?? '',
         boxNo: item.boxNo ?? `${item.id}-${index + 1}`,
+        boxCount: item.boxCount ?? 1,
+        declaredQuantity: item.quantity,
         piNo: item.piNo ?? '',
         packagingVisualType: getPackagingVisualType(item),
         bare: resolved.input,
@@ -797,7 +1005,7 @@ function buildPackingNote(unit: ExpandedUnit) {
 
   if (unit.packagingVisualType === 'wood_crate') parts.push('先打木箱')
   else if (unit.packagingVisualType === 'wood_frame') parts.push('先打木架')
-  else if (unit.packagingVisualType === 'paper') parts.push('先装纸箱')
+  else if (unit.packagingVisualType === 'paper') parts.push('按纸皮箱外箱准备')
   else if (unit.packagingVisualType === 'foam') parts.push('先包泡沫')
   else parts.push('直接按外箱准备')
 
@@ -816,27 +1024,33 @@ function generateCandidatePlansFromExpandedUnits({
   containerType,
   expandedUnits,
   customContainer,
+  remainingSpace,
+  loadPriority = 'self_first',
 }: {
   containerType: ContainerType
   expandedUnits: ExpandedUnit[]
   customContainer?: Dimension3D
+  remainingSpace?: RemainingSpaceInput
+  loadPriority?: LoadPriority
 }): ContainerPlanCandidate[] {
   const container = getContainerDimensions(containerType, customContainer)
+  const packingSpace = resolvePackingSpace({ container, remainingSpace })
   const bareCbm = expandedUnits.reduce((sum, unit) => sum + calculateItemCbm(unit.bare), 0)
   const packedCbm = expandedUnits.reduce((sum, unit) => sum + calculateItemCbm(unit.packed), 0)
-  const containerCbm = calculateItemCbm(container)
+  const containerCbm = calculateItemCbm(packingSpace)
 
   const seen = new Set<string>()
-  const candidates = PACKING_STRATEGIES.flatMap(({ id, label, sorter }) =>
+  const candidates = getPackingStrategies(loadPriority).flatMap(({ id, label, sorter }) =>
     buildStrategyVariants([...expandedUnits].sort(sorter), id, label).map(
       ({ candidateId, strategyLabel, orderedUnits }) => {
-        const candidate = buildPlanForOrderedUnits(container, orderedUnits)
+        const candidate = buildPlanForOrderedUnits(packingSpace, orderedUnits, loadPriority)
         return {
           candidateId,
           strategyLabel,
           plan: {
             containerType,
             container,
+            packingSpace,
             fits: candidate.unpackedItems.length === 0,
             summary: {
               totalUnits: expandedUnits.length,
@@ -849,7 +1063,7 @@ function generateCandidatePlansFromExpandedUnits({
             placements: candidate.placements,
             unpackedItems: candidate.unpackedItems,
           },
-          score: scoreCandidate(candidate, containerCbm),
+          score: scoreCandidate(candidate, containerCbm, loadPriority),
         }
       },
     ),
@@ -918,20 +1132,26 @@ function buildContainerPlanFromOrderedUnits({
   containerType,
   orderedUnits,
   customContainer,
+  remainingSpace,
+  loadPriority = 'self_first',
 }: {
   containerType: ContainerType
   orderedUnits: ExpandedUnit[]
   customContainer?: Dimension3D
+  remainingSpace?: RemainingSpaceInput
+  loadPriority?: LoadPriority
 }): ContainerPlan {
   const container = getContainerDimensions(containerType, customContainer)
+  const packingSpace = resolvePackingSpace({ container, remainingSpace })
   const bareCbm = orderedUnits.reduce((sum, unit) => sum + calculateItemCbm(unit.bare), 0)
   const packedCbm = orderedUnits.reduce((sum, unit) => sum + calculateItemCbm(unit.packed), 0)
-  const containerCbm = calculateItemCbm(container)
-  const candidate = buildPlanForOrderedUnits(container, orderedUnits)
+  const containerCbm = calculateItemCbm(packingSpace)
+  const candidate = buildPlanForOrderedUnits(packingSpace, orderedUnits, loadPriority)
 
   return {
     containerType,
     container,
+    packingSpace,
     fits: candidate.unpackedItems.length === 0,
     summary: {
       totalUnits: orderedUnits.length,
@@ -949,6 +1169,7 @@ function buildContainerPlanFromOrderedUnits({
 function buildPlanForOrderedUnits(
   container: Dimension3D,
   orderedUnits: ExpandedUnit[],
+  loadPriority: LoadPriority = 'self_first',
 ): PackingCandidate {
   const placedUnits: CandidatePlacement[] = []
   const unpackedItems: Array<{ itemId: string; label: string; index: number }> = []
@@ -961,6 +1182,7 @@ function buildPlanForOrderedUnits(
       container,
       placedUnits,
       unit,
+      loadPriority,
     })
 
     if (!placed) {
@@ -1003,15 +1225,39 @@ function buildPlanForOrderedUnits(
   }
 }
 
-function scoreCandidate(candidate: PackingCandidate, containerCbm: number) {
+function scoreCandidate(
+  candidate: PackingCandidate,
+  containerCbm: number,
+  loadPriority: LoadPriority = 'self_first',
+) {
   const fitsScore = candidate.unpackedItems.length === 0 ? 1_000_000 : 0
   const placedUnitsScore = candidate.placements.length * 10_000
   const utilizationScore = Math.round((candidate.placedPackedCbm / containerCbm) * 10_000)
-  const lowerStackPenalty = -candidate.placements.reduce((sum, placement) => sum + placement.zCm * (placement.singleWeightKg || 1), 0)
-  const boundingHeightPenalty = -Math.max(...candidate.placements.map((placement) => placement.zCm + placement.heightCm), 0) * 5
-  const frontSpreadPenalty = -Math.max(...candidate.placements.map((placement) => placement.yCm + placement.widthCm), 0)
+  const usedLength = Math.max(
+    ...candidate.placements.map((placement) => placement.xCm + placement.lengthCm),
+    0,
+  )
+  const usedWidth = Math.max(
+    ...candidate.placements.map((placement) => placement.yCm + placement.widthCm),
+    0,
+  )
+  const usedHeight = Math.max(
+    ...candidate.placements.map((placement) => placement.zCm + placement.heightCm),
+    0,
+  )
+  const usedEnvelopeVolume = Math.max(usedLength * usedWidth * usedHeight, 1)
+  const packedEnvelopeDensity = candidate.placedPackedCbm / (usedEnvelopeVolume / 1_000_000)
+  const lowerStackPenalty = -candidate.placements.reduce(
+    (sum, placement) => sum + placement.zCm * (placement.singleWeightKg || 1),
+    0,
+  )
+  const boundingHeightPenalty = -usedHeight * 4
+  const frontSpreadPenalty = -usedWidth * 12
   const supplierInteriorScore = candidate.placements.reduce((sum, placement) => {
-    return sum + (placement.supplierFlag === 'self' ? -placement.xCm : placement.xCm)
+    if (loadPriority === 'balanced') {
+      return sum
+    }
+    return sum + (placement.supplierFlag === preferredSupplierFlag(loadPriority) ? -placement.xCm : placement.xCm)
   }, 0)
   const floorPlacements = candidate.placements.filter((placement) => placement.zCm === 0)
   const floorUsedArea = floorPlacements.reduce(
@@ -1030,8 +1276,15 @@ function scoreCandidate(candidate: PackingCandidate, containerCbm: number) {
       : 0
   const floorVoidPenalty =
     floorPlacements.length > 1 ? -(floorSpanX * floorSpanY - floorUsedArea) * 3 : 0
-  const upperLevelCountPenalty =
-    -candidate.placements.filter((placement) => placement.zCm > 0).length * 2_000
+  const stackedPlacements = candidate.placements.filter((placement) => placement.zCm > 0)
+  const stackedPlacementReward = stackedPlacements.length * 2_000
+  const tailCompactionReward = -usedLength * 35
+  const envelopeDensityScore = Math.round(packedEnvelopeDensity * 2_000)
+  const heavyTopPenalty = -stackedPlacements.reduce((sum, placement) => {
+    const supportingWeight = getAverageSupportWeight(placement, candidate.placements)
+    const excessWeight = Math.max(0, placement.singleWeightKg - supportingWeight)
+    return sum + excessWeight * 300 + placement.singleWeightKg * placement.zCm * 2
+  }, 0)
 
   return (
     fitsScore +
@@ -1042,7 +1295,10 @@ function scoreCandidate(candidate: PackingCandidate, containerCbm: number) {
     frontSpreadPenalty +
     supplierInteriorScore +
     floorVoidPenalty +
-    upperLevelCountPenalty
+    stackedPlacementReward +
+    tailCompactionReward +
+    envelopeDensityScore +
+    heavyTopPenalty
   )
 }
 
@@ -1051,11 +1307,13 @@ function findBestPlacement({
   container,
   anchors,
   placedUnits,
+  loadPriority = 'self_first',
 }: {
   unit: ExpandedUnit
   container: Dimension3D
   anchors: Anchor[]
   placedUnits: CandidatePlacement[]
+  loadPriority?: LoadPriority
 }) {
   const orientations = [
     {
@@ -1083,7 +1341,10 @@ function findBestPlacement({
         fragile: unit.fragile,
         supplierFlag: unit.supplierFlag,
         singleWeightKg: unit.singleWeightKg,
+        productCode: unit.productCode,
         boxNo: unit.boxNo,
+        boxCount: unit.boxCount,
+        declaredQuantity: unit.declaredQuantity,
         piNo: unit.piNo,
         packagingVisualType: unit.packagingVisualType,
         ...orientation,
@@ -1101,7 +1362,7 @@ function findBestPlacement({
       }
 
       const support = getSupportRatio(candidate, placedUnits)
-      if (support < (candidate.zCm === 0 ? 1 : 0.92)) {
+      if (support < getMinimumSupportRatio(candidate)) {
         continue
       }
 
@@ -1109,17 +1370,25 @@ function findBestPlacement({
         continue
       }
 
+      const tailRemaining = container.lengthCm - (candidate.xCm + candidate.lengthCm)
+      const supplierPenalty =
+        loadPriority === 'balanced'
+          ? 0
+          : (candidate.supplierFlag === preferredSupplierFlag(loadPriority)
+              ? candidate.xCm
+              : container.lengthCm - (candidate.xCm + candidate.lengthCm)) * 3
+      const stackedWeightPenalty =
+        candidate.zCm > 0 ? candidate.singleWeightKg * (candidate.zCm + 1) * 4 : 0
+      const stableStackReward = candidate.zCm > 0 && support >= 0.8 ? -1_200 : 0
       const score =
-        candidate.zCm * 1_000_000_000 +
-        candidate.yCm * 1_000_000 +
-        candidate.xCm * 1_000 +
-        (1 - support) * 100 +
-        candidate.zCm * candidate.singleWeightKg * 10 +
-        (candidate.supplierFlag === 'self'
-          ? candidate.xCm
-          : container.lengthCm - (candidate.xCm + candidate.lengthCm)) *
-          5 +
-        (container.lengthCm - (candidate.xCm + candidate.lengthCm))
+        candidate.xCm * 5_000 +
+        candidate.yCm * 450 +
+        candidate.zCm * 120 +
+        (1 - support) * 25_000 +
+        stackedWeightPenalty +
+        supplierPenalty -
+        tailRemaining * 3 +
+        stableStackReward
 
       if (score < bestScore) {
         bestScore = score
@@ -1191,6 +1460,75 @@ function getSupportRatio(candidate: CandidatePlacement, placedUnits: CandidatePl
   return supportedArea / footprintArea
 }
 
+function getMinimumSupportRatio(candidate: CandidatePlacement) {
+  if (candidate.zCm === 0) {
+    return 1
+  }
+
+  if (candidate.fragile) {
+    return 0.8
+  }
+
+  if (candidate.singleWeightKg >= 80) {
+    return 0.88
+  }
+
+  if (candidate.singleWeightKg >= 40) {
+    return 0.8
+  }
+
+  return 0.72
+}
+
+function getAverageSupportWeight(
+  candidate: CandidatePlacement,
+  placedUnits: CandidatePlacement[],
+) {
+  if (candidate.zCm === 0) {
+    return candidate.singleWeightKg
+  }
+
+  const overlaps: Array<{ area: number; weight: number }> = []
+
+  for (const placement of placedUnits) {
+    if (placement.itemId === candidate.itemId && placement.index === candidate.index) {
+      continue
+    }
+
+    if (placement.zCm + placement.heightCm !== candidate.zCm) {
+      continue
+    }
+
+    const overlapLength =
+      Math.min(candidate.xCm + candidate.lengthCm, placement.xCm + placement.lengthCm) -
+      Math.max(candidate.xCm, placement.xCm)
+    const overlapWidth =
+      Math.min(candidate.yCm + candidate.widthCm, placement.yCm + placement.widthCm) -
+      Math.max(candidate.yCm, placement.yCm)
+
+    if (overlapLength <= 0 || overlapWidth <= 0) {
+      continue
+    }
+
+    overlaps.push({
+      area: overlapLength * overlapWidth,
+      weight: placement.singleWeightKg,
+    })
+  }
+
+  if (overlaps.length === 0) {
+    return 0
+  }
+
+  const totalArea = overlaps.reduce((sum, overlap) => sum + overlap.area, 0)
+  const weightedWeight = overlaps.reduce(
+    (sum, overlap) => sum + overlap.weight * overlap.area,
+    0,
+  )
+
+  return weightedWeight / totalArea
+}
+
 function isValidPlacementArrangement(
   placements: CandidatePlacement[],
   container: Dimension3D,
@@ -1208,7 +1546,7 @@ function isValidPlacementArrangement(
     }
 
     const support = getSupportRatio(candidate, others)
-    if (support < (candidate.zCm === 0 ? 1 : 0.92)) {
+    if (support < getMinimumSupportRatio(candidate)) {
       return false
     }
 
@@ -1381,6 +1719,24 @@ function expandAnchorsWithPlacement(anchors: Anchor[], placed: CandidatePlacemen
   ])
 }
 
-function supplierPriority(unit: ExpandedUnit) {
-  return unit.supplierFlag === 'self' ? -1 : 1
+function getSupplierPools(units: ExpandedUnitPreview[], loadPriority: LoadPriority) {
+  const selfUnits = units.filter((unit) => unit.supplierFlag === 'self')
+  const otherUnits = units.filter((unit) => unit.supplierFlag === 'other')
+
+  if (loadPriority === 'other_first') {
+    return [otherUnits, selfUnits].filter((pool) => pool.length > 0)
+  }
+
+  return [selfUnits, otherUnits].filter((pool) => pool.length > 0)
+}
+
+function preferredSupplierFlag(loadPriority: LoadPriority): SupplierFlag {
+  return loadPriority === 'other_first' ? 'other' : 'self'
+}
+
+function supplierPriority(unit: ExpandedUnit, loadPriority: LoadPriority = 'self_first') {
+  if (loadPriority === 'balanced') {
+    return 0
+  }
+  return unit.supplierFlag === preferredSupplierFlag(loadPriority) ? -1 : 1
 }

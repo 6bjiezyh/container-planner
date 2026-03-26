@@ -294,6 +294,14 @@
   font-weight: 600;
 }
 
+.checkbox-card-readonly {
+  justify-content: center;
+}
+
+.checkbox-card-readonly span {
+  color: var(--muted);
+}
+
 .packaging-row {
   margin-top: 12px;
   display: flex;
@@ -681,6 +689,81 @@
 .focus-card strong {
   font-size: 15px;
   line-height: 1.35;
+}
+
+.focus-card small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+
+.box-manifest-card {
+  border: 1px solid rgba(200, 186, 161, 0.7);
+  border-radius: 18px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.box-manifest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.box-manifest-group {
+  border: 1px solid rgba(200, 186, 161, 0.55);
+  border-radius: 14px;
+  background: rgba(255, 251, 244, 0.92);
+  padding: 12px 14px;
+}
+
+.box-manifest-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.box-manifest-header strong {
+  font-size: 15px;
+}
+
+.box-manifest-header small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.box-manifest-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.box-manifest-item {
+  border: 1px dashed rgba(200, 186, 161, 0.7);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.box-manifest-item strong,
+.box-manifest-item small {
+  display: block;
+}
+
+.box-manifest-item strong {
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.box-manifest-item small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .position-adjust-card {

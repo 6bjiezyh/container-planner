@@ -20,4 +20,14 @@ describe('packing list import', () => {
     expect(items[0].lengthCm).toBe(120)
     expect(items[0].singleWeightKg).toBe(20)
   })
+
+  it('marks rows as third-party cargo when the remark column says 第三方', () => {
+    const items = parsePackingListRows([
+      ['序号', '编码', 'PI序列号', '品名', '数量', '箱数', '箱号', '备注', '长', '宽', '高', '重量', '总重量'],
+      ['1', 'ZY-002', 'PI-002', '花架', '6', '1', 'B01', '第三方', '60', '40', '50', '12', '72'],
+    ])
+
+    expect(items).toHaveLength(1)
+    expect(items[0].supplierFlag).toBe('other')
+  })
 })

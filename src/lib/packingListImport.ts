@@ -7,6 +7,9 @@ const HEADER_ALIASES: Record<string, string> = {
   品名: 'product_name',
   编码: 'product_code',
   PI序列号: 'pi_no',
+  备注: 'remark',
+  备注说明: 'remark',
+  供应商备注: 'remark',
   数量: 'quantity',
   箱数: 'box_count',
   装箱数: 'load_qty',
@@ -86,7 +89,7 @@ export function parsePackingListRows(rows: Array<Array<string | number | null>>)
       boxCount,
       singleWeightKg: round(singleWeight, 2),
       orderId: '',
-      supplierFlag: 'self',
+      supplierFlag: resolveSupplierFlag(merged.remark),
       lengthCm: toNumber(merged.length_cm),
       widthCm: toNumber(merged.width_cm),
       heightCm: toNumber(merged.height_cm),
@@ -160,4 +163,17 @@ function createStableId(seed: string, index: number) {
 function round(value: number, digits: number) {
   const factor = 10 ** digits
   return Math.round(value * factor) / factor
+}
+
+function resolveSupplierFlag(value: unknown): ItemInput['supplierFlag'] {
+  const remark = normalizeText(value as string | number | null | undefined)
+  if (!remark) {
+    return 'self'
+  }
+
+  if (/(第三方|三方|外协|拼柜|其他供应商|他方|外部)/i.test(remark)) {
+    return 'other'
+  }
+
+  return 'self'
 }

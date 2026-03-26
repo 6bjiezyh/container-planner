@@ -37,7 +37,7 @@ describe('container planner rules', () => {
     })
   })
 
-  it('keeps entered dimensions as packed dimensions when outer box mode is used', () => {
+  it('keeps entered outer carton size but still allows wood packaging expansion in outer box mode', () => {
     expect(
       resolveItemDimensions({
         id: 'SKU-OUTER',
@@ -61,9 +61,9 @@ describe('container planner rules', () => {
         heightCm: 42,
       },
       packed: {
-        lengthCm: 61,
-        widthCm: 25,
-        heightCm: 42,
+        lengthCm: 67,
+        widthCm: 31,
+        heightCm: 53,
       },
     })
   })
@@ -199,20 +199,26 @@ describe('container planner rules', () => {
     expect(plan.placements).toHaveLength(4)
   })
 
-  it('prefers filling the floor before creating a new upper layer when the base still has room', () => {
+  it('allows stable stacking and keeps heavier cargo below lighter cargo when floor space is limited', () => {
     const plan = calculateContainerPlan({
-      containerType: '40HQ',
+      containerType: 'CUSTOM',
+      customContainer: {
+        lengthCm: 200,
+        widthCm: 100,
+        heightCm: 220,
+      },
       items: [
         {
           id: 'SKU-0',
-          label: '货物 0',
-          lengthCm: 160,
-          widthCm: 130,
-          heightCm: 60,
+          label: '重底货',
+          lengthCm: 100,
+          widthCm: 100,
+          heightCm: 100,
           quantity: 1,
           packagingType: 'none',
           dimensionInputMode: 'estimate',
           fragile: false,
+          singleWeightKg: 120,
           cartonEnabled: false,
           foamEnabled: false,
           cartonThicknessCm: 0,
@@ -220,14 +226,15 @@ describe('container planner rules', () => {
         },
         {
           id: 'SKU-1',
-          label: '货物 1',
-          lengthCm: 320,
-          widthCm: 50,
-          heightCm: 40,
+          label: '次重底货',
+          lengthCm: 100,
+          widthCm: 100,
+          heightCm: 100,
           quantity: 1,
           packagingType: 'none',
           dimensionInputMode: 'estimate',
           fragile: false,
+          singleWeightKg: 90,
           cartonEnabled: false,
           foamEnabled: false,
           cartonThicknessCm: 0,
@@ -235,14 +242,15 @@ describe('container planner rules', () => {
         },
         {
           id: 'SKU-2',
-          label: '货物 2',
-          lengthCm: 80,
-          widthCm: 60,
-          heightCm: 160,
+          label: '轻顶货 A',
+          lengthCm: 100,
+          widthCm: 100,
+          heightCm: 70,
           quantity: 1,
           packagingType: 'none',
           dimensionInputMode: 'estimate',
           fragile: false,
+          singleWeightKg: 15,
           cartonEnabled: false,
           foamEnabled: false,
           cartonThicknessCm: 0,
@@ -250,59 +258,15 @@ describe('container planner rules', () => {
         },
         {
           id: 'SKU-3',
-          label: '货物 3',
-          lengthCm: 260,
-          widthCm: 40,
-          heightCm: 80,
-          quantity: 1,
-          packagingType: 'none',
-          dimensionInputMode: 'estimate',
-          fragile: false,
-          cartonEnabled: false,
-          foamEnabled: false,
-          cartonThicknessCm: 0,
-          foamThicknessCm: 0,
-        },
-        {
-          id: 'SKU-4',
-          label: '货物 4',
-          lengthCm: 120,
-          widthCm: 180,
+          label: '轻顶货 B',
+          lengthCm: 100,
+          widthCm: 100,
           heightCm: 60,
           quantity: 1,
           packagingType: 'none',
           dimensionInputMode: 'estimate',
           fragile: false,
-          cartonEnabled: false,
-          foamEnabled: false,
-          cartonThicknessCm: 0,
-          foamThicknessCm: 0,
-        },
-        {
-          id: 'SKU-5',
-          label: '货物 5',
-          lengthCm: 260,
-          widthCm: 90,
-          heightCm: 120,
-          quantity: 1,
-          packagingType: 'none',
-          dimensionInputMode: 'estimate',
-          fragile: false,
-          cartonEnabled: false,
-          foamEnabled: false,
-          cartonThicknessCm: 0,
-          foamThicknessCm: 0,
-        },
-        {
-          id: 'SKU-6',
-          label: '货物 6',
-          lengthCm: 400,
-          widthCm: 210,
-          heightCm: 40,
-          quantity: 1,
-          packagingType: 'none',
-          dimensionInputMode: 'estimate',
-          fragile: false,
+          singleWeightKg: 10,
           cartonEnabled: false,
           foamEnabled: false,
           cartonThicknessCm: 0,
@@ -312,8 +276,14 @@ describe('container planner rules', () => {
     })
 
     expect(plan.fits).toBe(true)
-    expect(plan.placements).toHaveLength(7)
-    expect(plan.placements.every((placement) => placement.zCm === 0)).toBe(true)
+    expect(plan.placements).toHaveLength(4)
+    expect(plan.placements.some((placement) => placement.zCm > 0)).toBe(true)
+
+    const heaviest = plan.placements.find((placement) => placement.itemId === 'SKU-0')
+    const lightest = plan.placements.find((placement) => placement.itemId === 'SKU-3')
+
+    expect(heaviest?.zCm ?? 999).toBe(0)
+    expect((lightest?.zCm ?? 0) >= (heaviest?.zCm ?? 0)).toBe(true)
   })
 
   it('respects an explicit unit order when building an alternative packing plan', () => {
@@ -535,6 +505,61 @@ describe('container planner rules', () => {
     ).toBe(true)
   })
 
+  it('can prioritize third-party cargo first when separating supplier batches', () => {
+    const items = [
+      {
+        id: 'SELF-1',
+        label: '己方货物',
+        lengthCm: 120,
+        widthCm: 80,
+        heightCm: 90,
+        quantity: 1,
+        packagingType: 'none' as const,
+        dimensionInputMode: 'estimate' as const,
+        fragile: false,
+        cartonEnabled: false,
+        cartonThicknessCm: 0,
+        foamEnabled: false,
+        foamThicknessCm: 0,
+        supplierFlag: 'self' as const,
+      },
+      {
+        id: 'OTHER-1',
+        label: '第三方货物',
+        lengthCm: 120,
+        widthCm: 80,
+        heightCm: 90,
+        quantity: 1,
+        packagingType: 'none' as const,
+        dimensionInputMode: 'estimate' as const,
+        fragile: false,
+        cartonEnabled: false,
+        cartonThicknessCm: 0,
+        foamEnabled: false,
+        foamThicknessCm: 0,
+        supplierFlag: 'other' as const,
+      },
+    ]
+
+    const thirdPartyFirst = calculateMultiContainerPlan({
+      containerType: '20GP',
+      items,
+      splitMode: 'separate_suppliers',
+      loadPriority: 'other_first',
+    })
+
+    expect(
+      thirdPartyFirst.batches[0].plan.placements.every(
+        (placement) => placement.supplierFlag === 'other',
+      ),
+    ).toBe(true)
+    expect(
+      thirdPartyFirst.batches[1].plan.placements.every(
+        (placement) => placement.supplierFlag === 'self',
+      ),
+    ).toBe(true)
+  })
+
   it('supports manual placement nudging only when the adjusted position remains valid', () => {
     const plan = calculateContainerPlan({
       containerType: '20GP',
@@ -576,5 +601,47 @@ describe('container planner rules', () => {
     })
 
     expect(invalidPlan).toBeNull()
+  })
+
+  it('packs only inside the declared remaining entrance space', () => {
+    const plan = calculateContainerPlan({
+      containerType: '40HQ',
+      remainingSpace: {
+        enabled: true,
+        lengthCm: 300,
+        widthCm: 200,
+        heightCm: 200,
+      },
+      items: [
+        {
+          id: 'SKU-RS',
+          label: '入口剩余空间测试货物',
+          lengthCm: 100,
+          widthCm: 80,
+          heightCm: 90,
+          quantity: 2,
+          packagingType: 'none',
+          dimensionInputMode: 'estimate',
+          fragile: false,
+          cartonEnabled: false,
+          cartonThicknessCm: 0,
+          foamEnabled: false,
+          foamThicknessCm: 0,
+        },
+      ],
+    })
+
+    expect(plan.packingSpace.lengthCm).toBe(300)
+    expect(plan.packingSpace.widthCm).toBe(200)
+    expect(plan.packingSpace.heightCm).toBe(200)
+    expect(plan.packingSpace.originXCm).toBe(903)
+    expect(
+      plan.placements.every(
+        (placement) =>
+          placement.xCm + placement.lengthCm <= plan.packingSpace.lengthCm &&
+          placement.yCm + placement.widthCm <= plan.packingSpace.widthCm &&
+          placement.zCm + placement.heightCm <= plan.packingSpace.heightCm,
+      ),
+    ).toBe(true)
   })
 })

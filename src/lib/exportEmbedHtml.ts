@@ -237,6 +237,13 @@ export function exportPlanAsStandaloneHtml({
           item.className = 'sequence-item';
           item.style.opacity = index < visibleCount ? '1' : '0.55';
           item.innerHTML = '<strong>步骤 ' + (index + 1) + ' · ' + escapeHtml(placement.label) + '</strong>' +
+            '<small>' +
+              (placement.piNo ? 'PI ' + escapeHtml(placement.piNo) + ' · ' : '') +
+              (placement.productCode ? '产品编码 ' + escapeHtml(placement.productCode) + ' · ' : '') +
+              (placement.boxNo ? '箱号 ' + escapeHtml(placement.boxNo) + ' · ' : '') +
+              '箱数 ' + placement.boxCount +
+              ' · 录入数量 ' + placement.declaredQuantity +
+            '</small>' +
             '<small>' + placement.lengthCm + '×' + placement.widthCm + '×' + placement.heightCm + 'cm · layer ' + (placement.layer + 1) + '</small>';
           sequence.appendChild(item);
         });

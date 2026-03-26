@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Canvas } from '@react-three/fiber'
-import { OrbitControls, PerspectiveCamera } from '@react-three/drei'
+import { Billboard, Edges, OrbitControls, PerspectiveCamera, Text } from '@react-three/drei'
 import { createSceneData } from '../lib/sceneData'
 import type { ContainerPlan } from '../lib/containerPlanner'
 
@@ -37,6 +37,11 @@ export function ScenePreview({
           <div className="scene-hud scene-hud-container">
             <strong>{scene.container.label}</strong>
             <span>{scene.container.dimensionLabel}</span>
+            {scene.packingSpace.dimensionLabel !== scene.container.dimensionLabel ? (
+              <small>
+                {scene.packingSpace.label} {scene.packingSpace.dimensionLabel}
+              </small>
+            ) : null}
           </div>
           <div className="scene-hud scene-hud-hint">拖拽旋转视角，点击货物查看尺寸</div>
           <div className="scene-hud scene-hud-controls">
@@ -74,6 +79,7 @@ export function ScenePreview({
           {focusedBox ? (
             <div className="scene-hud scene-hud-box">
               <strong>{focusedBox.label}</strong>
+              {focusedBox.productCode ? <span>产品编码 {focusedBox.productCode}</span> : null}
               {focusedBox.piNo || focusedBox.boxNo ? (
                 <span>
                   {focusedBox.piNo ? `PI ${focusedBox.piNo}` : ''}
@@ -118,6 +124,12 @@ export function ScenePreview({
               showFill={showShellFill}
               width={scene.container.width}
             />
+            <RemainingSpaceFrame
+              height={scene.packingSpace.height}
+              length={scene.packingSpace.length}
+              width={scene.packingSpace.width}
+              x={scene.packingSpace.x}
+            />
             {visibleBoxes.map((box) => (
               <group key={box.id} position={[box.position.x, box.position.y, box.position.z]}>
                 <mesh
@@ -133,14 +145,38 @@ export function ScenePreview({
                   }}
                 >
                   <boxGeometry args={[box.size.x, box.size.y, box.size.z]} />
-                  <meshStandardMaterial {...getBoxMaterialProps(box.packagingVisualType, box.color, box.id === focusedId, box.id === activePlacementId)} />
+                  <meshStandardMaterial
+                    {...getBoxMaterialProps(
+                      box.packagingVisualType,
+                      box.color,
+                      box.id === focusedId,
+                      box.id === activePlacementId,
+                    )}
+                  />
+                  <Edges
+                    color={box.accentColor}
+                    lineWidth={box.packagingVisualType === 'wood_crate' ? 2.2 : 1.4}
+                    scale={1.003}
+                  />
                 </mesh>
                 {box.packagingVisualType === 'wood_frame' ? (
-                  <mesh>
-                    <boxGeometry args={[box.size.x * 1.005, box.size.y * 1.005, box.size.z * 1.005]} />
-                    <meshBasicMaterial color="#6d5337" wireframe />
-                  </mesh>
+                  <>
+                    <mesh>
+                      <boxGeometry
+                        args={[box.size.x * 1.008, box.size.y * 1.008, box.size.z * 1.008]}
+                      />
+                      <meshBasicMaterial color={box.accentColor} transparent opacity={0.85} wireframe />
+                    </mesh>
+                    <FramePosts box={box} />
+                  </>
                 ) : null}
+                {box.packagingVisualType === 'wood_crate' ? (
+                  <CrateStraps box={box} />
+                ) : null}
+                {box.packagingVisualType === 'paper' ? (
+                  <CartonBands box={box} />
+                ) : null}
+                {box.boxNo ? <BoxNumberLabel box={box} /> : null}
               </group>
             ))}
           </>
@@ -149,6 +185,31 @@ export function ScenePreview({
         )}
       </Canvas>
     </div>
+  )
+}
+
+function RemainingSpaceFrame({
+  length,
+  width,
+  height,
+  x,
+}: {
+  length: number
+  width: number
+  height: number
+  x: number
+}) {
+  return (
+    <group position={[x + length / 2, height / 2, 0]}>
+      <mesh>
+        <boxGeometry args={[length, height, width]} />
+        <meshBasicMaterial color="#d93232" transparent opacity={0.12} />
+      </mesh>
+      <mesh>
+        <boxGeometry args={[length, height, width]} />
+        <meshBasicMaterial color="#d93232" transparent opacity={0.95} wireframe />
+      </mesh>
+    </group>
   )
 }
 
@@ -224,27 +285,144 @@ function getBoxMaterialProps(
       return {
         ...base,
         transparent: true,
-        opacity: 0.55,
+        opacity: 0.5,
       }
     case 'paper':
       return {
         ...base,
         transparent: false,
         opacity: 1,
+        roughness: 0.92,
       }
     case 'wood_crate':
       return {
         ...base,
         metalness: 0.02,
-        roughness: 0.82,
+        roughness: 0.88,
       }
     case 'wood_frame':
       return {
         ...base,
         transparent: true,
-        opacity: 0.16,
+        opacity: 0.08,
+        roughness: 0.95,
       }
     default:
       return base
   }
+}
+
+function FramePosts({
+  box,
+}: {
+  box: {
+    size: { x: number; y: number; z: number }
+    accentColor: string
+  }
+}) {
+  const postThickness = Math.max(Math.min(box.size.x, box.size.y, box.size.z) * 0.035, 0.02)
+  const x = box.size.x / 2 - postThickness / 2
+  const y = box.size.y / 2
+  const z = box.size.z / 2 - postThickness / 2
+  const positions: Array<[number, number, number]> = [
+    [x, y, z],
+    [x, y, -z],
+    [-x, y, z],
+    [-x, y, -z],
+  ]
+
+  return (
+    <group>
+      {positions.map((position, index) => (
+        <mesh key={index} position={position}>
+          <boxGeometry args={[postThickness, box.size.y, postThickness]} />
+          <meshStandardMaterial color={box.accentColor} metalness={0.02} roughness={0.94} />
+        </mesh>
+      ))}
+    </group>
+  )
+}
+
+function CrateStraps({
+  box,
+}: {
+  box: {
+    size: { x: number; y: number; z: number }
+    accentColor: string
+  }
+}) {
+  const strapThickness = Math.max(Math.min(box.size.x, box.size.z) * 0.02, 0.015)
+  const y = box.size.y / 2 + strapThickness / 2
+  const xOffsets = [-0.25, 0.25].map((ratio) => ratio * box.size.x)
+  const zOffsets = [-0.25, 0.25].map((ratio) => ratio * box.size.z)
+
+  return (
+    <group>
+      {xOffsets.map((offset, index) => (
+        <mesh key={`x-${index}`} position={[offset, y, 0]}>
+          <boxGeometry args={[strapThickness, box.size.y * 1.01, box.size.z * 1.01]} />
+          <meshStandardMaterial color={box.accentColor} metalness={0.04} roughness={0.84} />
+        </mesh>
+      ))}
+      {zOffsets.map((offset, index) => (
+        <mesh key={`z-${index}`} position={[0, y, offset]}>
+          <boxGeometry args={[box.size.x * 1.01, box.size.y * 1.01, strapThickness]} />
+          <meshStandardMaterial color={box.accentColor} metalness={0.04} roughness={0.84} />
+        </mesh>
+      ))}
+    </group>
+  )
+}
+
+function CartonBands({
+  box,
+}: {
+  box: {
+    size: { x: number; y: number; z: number }
+    accentColor: string
+  }
+}) {
+  const bandThickness = Math.max(Math.min(box.size.x, box.size.z) * 0.012, 0.012)
+  const y = box.size.y / 2 + bandThickness / 2
+
+  return (
+    <group>
+      <mesh position={[0, y, 0]}>
+        <boxGeometry args={[box.size.x * 1.01, bandThickness, box.size.z * 1.01]} />
+        <meshStandardMaterial color={box.accentColor} metalness={0.02} roughness={0.92} />
+      </mesh>
+      <mesh position={[0, 0, 0]}>
+        <boxGeometry args={[bandThickness, box.size.y * 1.01, box.size.z * 1.01]} />
+        <meshStandardMaterial color={box.accentColor} metalness={0.02} roughness={0.92} />
+      </mesh>
+    </group>
+  )
+}
+
+function BoxNumberLabel({
+  box,
+}: {
+  box: {
+    boxNo: string
+    size: { x: number; y: number; z: number }
+  }
+}) {
+  const fontSize = Math.max(Math.min(box.size.x, box.size.y, box.size.z) * 0.18, 0.16)
+
+  return (
+    <Billboard follow lockX={false} lockY={false} lockZ={false} position={[0, 0, 0]}>
+      <Text
+        anchorX="center"
+        anchorY="middle"
+        color="#d9534f"
+        fontSize={fontSize}
+        maxWidth={Math.max(box.size.x * 0.7, fontSize)}
+        outlineColor="#fff8f2"
+        outlineWidth={fontSize * 0.08}
+        renderOrder={10}
+      >
+        {box.boxNo}
+      </Text>
+    </Billboard>
+  )
 }

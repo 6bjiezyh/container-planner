@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
 import {
   calculateMultiContainerPlan,
@@ -10,13 +10,17 @@ import {
   nudgePlacementInPlan,
   recommendContainerPlans,
   resolveItemDimensions,
+  type ContainerRecommendation,
   type ContainerType,
   type Dimension3D,
   type DimensionInputMode,
   type ItemInput,
+  type LoadPriority,
   type MultiContainerPlan,
+  type PackingSequenceStep,
   type PackagingType,
   type PlacementAxis,
+  type RemainingSpaceInput,
   type SplitMode,
   type SupplierFlag,
 } from './lib/containerPlanner'
@@ -45,8 +49,15 @@ const DEFAULT_WOOD_CRATE_THICKNESS_CM = 3
 function App() {
   const [containerType, setContainerType] = useState<ContainerType>('40HQ')
   const [splitMode, setSplitMode] = useState<SplitMode>('mixed')
+  const [loadPriority, setLoadPriority] = useState<LoadPriority>('self_first')
   const [planReference, setPlanReference] = useState('')
   const [customContainer, setCustomContainer] = useState<Dimension3D>({
+    lengthCm: 1203,
+    widthCm: 235,
+    heightCm: 269,
+  })
+  const [remainingSpace, setRemainingSpace] = useState<RemainingSpaceInput>({
+    enabled: false,
     lengthCm: 1203,
     widthCm: 235,
     heightCm: 269,
@@ -79,11 +90,8 @@ function App() {
 
   const resolvedCustomContainer = containerType === 'CUSTOM' ? customContainer : undefined
   const container = getContainerDimensions(containerType, resolvedCustomContainer)
-  const recommendedContainers = useMemo(
-    () => recommendContainerPlans({ items, splitMode }).slice(0, 3),
-    [items, splitMode],
-  )
-  const packingSequence = useMemo(() => generatePackingSequence(items), [items])
+  const [recommendedContainers, setRecommendedContainers] = useState<ContainerRecommendation[]>([])
+  const [packingSequence, setPackingSequence] = useState<PackingSequenceStep[]>([])
   const totalBareCbm = items.reduce(
     (sum, item) =>
       sum +
@@ -95,6 +103,15 @@ function App() {
       }),
     0,
   )
+
+  useEffect(() => {
+    setRemainingSpace((current) => ({
+      ...current,
+      lengthCm: Math.min(current.lengthCm, container.lengthCm),
+      widthCm: Math.min(current.widthCm, container.widthCm),
+      heightCm: Math.min(current.heightCm, container.heightCm),
+    }))
+  }, [container.lengthCm, container.widthCm, container.heightCm])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -248,11 +265,18 @@ function App() {
   }
 
   async function handleCalculate() {
+    setRecommendedContainers(
+      recommendContainerPlans({ items, splitMode, remainingSpace, loadPriority }).slice(0, 3),
+    )
+    setPackingSequence(generatePackingSequence(items, loadPriority))
+
     const nextAlgorithmPlan = calculateMultiContainerPlan({
       containerType,
       items,
       customContainer: resolvedCustomContainer,
       splitMode,
+      remainingSpace,
+      loadPriority,
     })
     setAlgorithmPlan(nextAlgorithmPlan)
     setQwenPlan(null)
@@ -267,6 +291,8 @@ function App() {
         baseUrl: ollamaBaseUrl,
         customContainer: resolvedCustomContainer,
         splitMode,
+        remainingSpace,
+        loadPriority,
       })
       setQwenPlan(nextQwenPlan)
     } catch (error) {
@@ -284,8 +310,15 @@ function App() {
     try {
       const importedItems = await importPackingListFile(file)
       setItems(importedItems)
+      setAlgorithmPlan(null)
+      setQwenPlan(null)
+      setQwenError(null)
+      setRecommendedContainers([])
+      setPackingSequence([])
       setPlanReference(file.name.replace(/\.[^.]+$/, ''))
-      setImportMessage(`已导入 ${importedItems.length} 条货物，默认按外箱尺寸计算。`)
+      setImportMessage(
+        `已导入 ${importedItems.length} 条货物。为避免大装箱单卡顿，请点击“生成双方案”后再计算推荐柜型和动画。`,
+      )
     } catch (error) {
       setImportMessage(error instanceof Error ? error.message : '装箱单导入失败')
     }
@@ -360,29 +393,33 @@ function App() {
             <h2>柜型推荐</h2>
           </div>
           <div className="recommendation-list">
-            {recommendedContainers.map((recommendation, index) => (
-              <button
-                key={recommendation.containerType}
-                className={
-                  recommendation.containerType === containerType
-                    ? 'recommendation-card active'
-                    : 'recommendation-card'
-                }
-                onClick={() => setContainerType(recommendation.containerType)}
-                type="button"
-              >
-                <div className="recommendation-rank">TOP {index + 1}</div>
-                <strong>{getContainerLabel(recommendation.containerType)}</strong>
-                <small>
-                  {recommendation.plan.summary.totalContainers} 柜 · 利用率{' '}
-                  {(recommendation.plan.summary.utilizationRatio * 100).toFixed(1)}%
-                </small>
-                <small>
-                  未装入 {recommendation.plan.summary.unpackedItems} 件 / 已装入{' '}
-                  {recommendation.plan.summary.packedUnits} 件
-                </small>
-              </button>
-            ))}
+            {recommendedContainers.length === 0 ? (
+              <p className="hint">导入或修改数据后，点击“生成双方案”再刷新推荐柜型。</p>
+            ) : (
+              recommendedContainers.map((recommendation, index) => (
+                <button
+                  key={recommendation.containerType}
+                  className={
+                    recommendation.containerType === containerType
+                      ? 'recommendation-card active'
+                      : 'recommendation-card'
+                  }
+                  onClick={() => setContainerType(recommendation.containerType)}
+                  type="button"
+                >
+                  <div className="recommendation-rank">TOP {index + 1}</div>
+                  <strong>{getContainerLabel(recommendation.containerType)}</strong>
+                  <small>
+                    {recommendation.plan.summary.totalContainers} 柜 · 利用率{' '}
+                    {(recommendation.plan.summary.utilizationRatio * 100).toFixed(1)}%
+                  </small>
+                  <small>
+                    未装入 {recommendation.plan.summary.unpackedItems} 件 / 已装入{' '}
+                    {recommendation.plan.summary.packedUnits} 件
+                  </small>
+                </button>
+              ))
+            )}
           </div>
           <p className="hint">
             推荐逻辑会在常见车柜里比较总柜数、未装入件数与平均利用率，优先推荐能装下且柜数更少的方案。
@@ -410,6 +447,31 @@ function App() {
           </div>
           <p className="hint">
             允许混装时，己方与第三方货物可以同柜优化利用率；按供应商分柜时，系统会先装己方，再单独拆分第三方货物，便于拼柜与对账。
+          </p>
+        </div>
+
+        <div className="field-group">
+          <div className="section-title">
+            <h2>装柜优先级</h2>
+          </div>
+          <div className="choice-grid">
+            {([
+              { id: 'self_first', label: '己方优先' },
+              { id: 'other_first', label: '第三方优先' },
+              { id: 'balanced', label: '平衡混装' },
+            ] as Array<{ id: LoadPriority; label: string }>).map((option) => (
+              <button
+                key={option.id}
+                className={loadPriority === option.id ? 'chip active' : 'chip'}
+                onClick={() => setLoadPriority(option.id)}
+                type="button"
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <p className="hint">
+            客户如果在装箱单备注列写“第三方”，系统会自动归类。这里再决定本轮装柜时优先装己方、优先装第三方，还是平衡混装。
           </p>
         </div>
 
@@ -522,6 +584,81 @@ function App() {
               )}
             </>
           ) : null}
+          <div className="field-group nested-field-group">
+            <label className="checkbox-card">
+              <input
+                checked={remainingSpace.enabled}
+                onChange={(event) =>
+                  setRemainingSpace((current) => ({
+                    ...current,
+                    enabled: event.target.checked,
+                    lengthCm: Math.min(current.lengthCm || container.lengthCm, container.lengthCm),
+                    widthCm: Math.min(current.widthCm || container.widthCm, container.widthCm),
+                    heightCm: Math.min(current.heightCm || container.heightCm, container.heightCm),
+                  }))
+                }
+                type="checkbox"
+              />
+              <div>
+                <strong>入口剩余空间模式</strong>
+                <span>其他供应商已经占用前半段，只对入口剩余空间继续装货</span>
+              </div>
+            </label>
+            {remainingSpace.enabled ? (
+              <>
+                <div className="dimensions-grid dimensions-grid-three">
+                  <label>
+                    剩余长度(cm)
+                    <input
+                      type="number"
+                      max={container.lengthCm}
+                      min={1}
+                      value={remainingSpace.lengthCm}
+                      onChange={(event) =>
+                        setRemainingSpace((current) => ({
+                          ...current,
+                          lengthCm: Number(event.target.value),
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    剩余宽度(cm)
+                    <input
+                      type="number"
+                      max={container.widthCm}
+                      min={1}
+                      value={remainingSpace.widthCm}
+                      onChange={(event) =>
+                        setRemainingSpace((current) => ({
+                          ...current,
+                          widthCm: Number(event.target.value),
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    剩余高度(cm)
+                    <input
+                      type="number"
+                      max={container.heightCm}
+                      min={1}
+                      value={remainingSpace.heightCm}
+                      onChange={(event) =>
+                        setRemainingSpace((current) => ({
+                          ...current,
+                          heightCm: Number(event.target.value),
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+                <p className="hint">
+                  系统不会计算其他供应商货物本身，只会把入口剩余空间视为唯一可摆放区域，并在 3D 视图里用红色线框标出。
+                </p>
+              </>
+            ) : null}
+          </div>
         </div>
 
         <div className="field-group">
@@ -749,68 +886,87 @@ function App() {
                   />
                   <span>易碎产品</span>
                 </label>
-                <label className="checkbox-card">
-                  <input
-                    checked={item.cartonEnabled}
-                    disabled={item.dimensionInputMode === 'outer_box'}
-                    onChange={(event) =>
-                      updateItem(item.id, 'cartonEnabled', event.target.checked)
-                    }
-                    type="checkbox"
-                  />
-                  <span>定制纸箱</span>
-                </label>
+                {item.dimensionInputMode === 'outer_box' ? (
+                  <div className="checkbox-card checkbox-card-readonly">
+                    <span>纸皮箱/外箱已录入</span>
+                  </div>
+                ) : (
+                  <label className="checkbox-card">
+                    <input
+                      checked={item.cartonEnabled}
+                      onChange={(event) =>
+                        updateItem(item.id, 'cartonEnabled', event.target.checked)
+                      }
+                      type="checkbox"
+                    />
+                    <span>纸皮箱</span>
+                  </label>
+                )}
               </div>
 
-              {item.dimensionInputMode === 'estimate' ? (
-                <>
-                  <div className="packaging-row">
-                    {(['none', 'wood_frame', 'wood_crate'] as PackagingType[]).map((type) => (
-                      <button
-                        key={type}
-                        className={item.packagingType === type ? 'chip active' : 'chip'}
-                        onClick={() => updateItem(item.id, 'packagingType', type)}
-                        type="button"
-                        >
-                          {packagingLabel(type)}
-                        </button>
-                      ))}
-                    <button
-                      className="ghost-button"
-                      onClick={() => applyPackagingDefaults(item.id)}
-                      type="button"
-                    >
-                      套用默认厚度
-                    </button>
-                  </div>
+              <div className="packaging-row">
+                {(['none', 'wood_frame', 'wood_crate'] as PackagingType[]).map((type) => (
+                  <button
+                    key={type}
+                    className={item.packagingType === type ? 'chip active' : 'chip'}
+                    onClick={() => updateItem(item.id, 'packagingType', type)}
+                    type="button"
+                  >
+                    {packagingLabel(type)}
+                  </button>
+                ))}
+                <button
+                  className="ghost-button"
+                  onClick={() => applyPackagingDefaults(item.id)}
+                  type="button"
+                >
+                  套用默认厚度
+                </button>
+              </div>
 
-                  <div className="dimensions-grid dimensions-grid-two">
-                    <label>
-                      木箱/木架厚度(cm)
-                      <input
-                        disabled={item.packagingType === 'none'}
-                        min={0}
-                        step="0.1"
-                        type="number"
-                        value={item.woodThicknessCm ?? (item.packagingType === 'wood_crate' ? 3 : item.packagingType === 'wood_frame' ? 2 : 0)}
-                        onChange={(event) =>
-                          updateItem(item.id, 'woodThicknessCm', Number(event.target.value))
-                        }
-                      />
-                    </label>
-                    <label>
-                      纸箱厚度(cm)
-                      <input
-                        disabled={!item.cartonEnabled}
-                        min={0}
-                        step="0.1"
-                        type="number"
-                        value={item.cartonThicknessCm}
-                        onChange={(event) =>
-                          updateItem(item.id, 'cartonThicknessCm', Number(event.target.value))
-                        }
-                      />
-                    </label>
+              <div className="dimensions-grid dimensions-grid-two">
+                <label>
+                  木箱/木架厚度(cm)
+                  <input
+                    disabled={item.packagingType === 'none'}
+                    min={0}
+                    step="0.1"
+                    type="number"
+                    value={
+                      item.woodThicknessCm ??
+                      (item.packagingType === 'wood_crate'
+                        ? 3
+                        : item.packagingType === 'wood_frame'
+                          ? 2
+                          : 0)
+                    }
+                    onChange={(event) =>
+                      updateItem(item.id, 'woodThicknessCm', Number(event.target.value))
+                    }
+                  />
+                </label>
+                {item.dimensionInputMode === 'estimate' ? (
+                  <label>
+                    纸箱厚度(cm)
+                    <input
+                      disabled={!item.cartonEnabled}
+                      min={0}
+                      step="0.1"
+                      type="number"
+                      value={item.cartonThicknessCm}
+                      onChange={(event) =>
+                        updateItem(item.id, 'cartonThicknessCm', Number(event.target.value))
+                      }
+                    />
+                  </label>
+                ) : (
+                  <label>
+                    外箱说明
+                    <input readOnly type="text" value="当前输入已视为纸皮箱/外箱尺寸" />
+                  </label>
+                )}
+                {item.dimensionInputMode === 'estimate' ? (
+                  <>
                     <label className="checkbox-card">
                       <input
                         checked={item.foamEnabled}
@@ -834,16 +990,34 @@ function App() {
                         }
                       />
                     </label>
-                  </div>
+                  </>
+                ) : null}
+              </div>
+
+              {item.dimensionInputMode === 'estimate' ? (
+                <>
+                  <p className="hint">
+                    定制产品可先录入预估成品尺寸，再勾选纸皮箱、泡沫以及木架/木箱并填写厚度，系统会按层级自动外拓。
+                  </p>
                 </>
               ) : (
                 <p className="hint">
-                  当前按外箱尺寸直接计算，不再额外估算纸箱、泡沫或木架外扩。
+                  当前输入即纸皮箱/外箱尺寸；如需出货前再加木架或木箱，可继续选择包装类型并填写厚度。
                 </p>
               )}
 
+              {item.dimensionInputMode === 'estimate' ? (
+                <>
+                  <div className="packaging-row">
+                    <span className="hint">
+                      纸皮箱和泡沫只在“按产品尺寸估算包装”模式下参与扩尺；外箱模式默认按成品外箱计算。
+                    </span>
+                  </div>
+                </>
+              ) : null}
+
               <p className="hint">
-                装箱单映射建议：常规货物直接填外箱尺寸；定制产品勾选纸皮/木箱/木架并填写厚度；易碎品可勾选包泡沫；第三方供应商货物会按拼柜逻辑靠外侧排。
+                装箱单映射建议：常规货物直接填外箱尺寸；定制产品填预估成品尺寸后勾选纸皮箱、泡沫、木架/木箱并填写厚度；易碎品可勾选包泡沫；如果 Excel 备注列写“第三方”，导入后会自动归类成第三方货物。
               </p>
                   </>
                 )
@@ -878,18 +1052,29 @@ function App() {
             <h2>推荐打包顺序</h2>
           </div>
           <div className="packing-sequence-list">
-            {packingSequence.map((step, index) => (
-              <div className="packing-sequence-row" key={step.sequenceId}>
-                <strong>{index + 1}</strong>
-                <span>
-                  {step.label}
-                  <small>
-                    {step.packed.lengthCm}×{step.packed.widthCm}×{step.packed.heightCm}cm
-                  </small>
-                </span>
-                <em>{step.note}</em>
-              </div>
-            ))}
+            {packingSequence.length === 0 ? (
+              <p className="hint">点击“生成双方案”后，这里会生成推荐打包顺序。</p>
+            ) : (
+              packingSequence.map((step, index) => (
+                <div className="packing-sequence-row" key={step.sequenceId}>
+                  <strong>{index + 1}</strong>
+                  <span>
+                    {step.label}
+                    <small>
+                      {formatPlacementMeta(step)}
+                      {' · '}
+                      录入数量 {step.declaredQuantity}
+                      {' · '}
+                      箱数 {step.boxCount}
+                    </small>
+                    <small>
+                      {step.packed.lengthCm}×{step.packed.widthCm}×{step.packed.heightCm}cm
+                    </small>
+                  </span>
+                  <em>{step.note}</em>
+                </div>
+              ))
+            )}
           </div>
           <p className="hint">
             打包顺序会优先处理木箱/木架等定制包装，再到纸箱与泡沫，易碎件默认后移，第三方货物会单独标注，方便后续拼柜。
@@ -909,6 +1094,7 @@ function App() {
           <MultiPlanWorkspace
             emptyMessage="点击“生成双方案”后，这里会展示本地装箱算法的 3D 动画和 GIF 导出。"
             exportPrefix={planReference}
+            loadPriority={loadPriority}
             plan={algorithmPlan}
             title="本地算法方案"
             subtitle="规则计算 + 多策略搜索"
@@ -922,6 +1108,7 @@ function App() {
             }
             batchExplanations={qwenPlan?.batchExplanations}
             exportPrefix={planReference}
+            loadPriority={loadPriority}
             modelLabel={qwenPlan?.model}
             plan={qwenPlan?.plan ?? null}
             title="Qwen 对比方案"
@@ -933,6 +1120,25 @@ function App() {
   )
 }
 
+function getRemainingSpaceFromPlan(plan: MultiContainerPlan): RemainingSpaceInput | undefined {
+  const matchesFullContainer =
+    plan.packingSpace.originXCm === 0 &&
+    plan.packingSpace.lengthCm === plan.container.lengthCm &&
+    plan.packingSpace.widthCm === plan.container.widthCm &&
+    plan.packingSpace.heightCm === plan.container.heightCm
+
+  if (matchesFullContainer) {
+    return undefined
+  }
+
+  return {
+    enabled: true,
+    lengthCm: plan.packingSpace.lengthCm,
+    widthCm: plan.packingSpace.widthCm,
+    heightCm: plan.packingSpace.heightCm,
+  }
+}
+
 export default App
 
 function MultiPlanWorkspace({
@@ -942,6 +1148,7 @@ function MultiPlanWorkspace({
   batchExplanations,
   emptyMessage,
   exportPrefix,
+  loadPriority,
   modelLabel,
 }: {
   title: string
@@ -950,6 +1157,7 @@ function MultiPlanWorkspace({
   batchExplanations?: Record<string, string[]>
   emptyMessage: string
   exportPrefix?: string
+  loadPriority: LoadPriority
   modelLabel?: string
 }) {
   const [workingPlan, setWorkingPlan] = useState<MultiContainerPlan | null>(plan)
@@ -969,6 +1177,7 @@ function MultiPlanWorkspace({
     null
   const activePlan = activeBatch?.plan ?? null
   const activeExplanation = activeBatch ? batchExplanations?.[activeBatch.batchId] : undefined
+  const activeBoxManifest = activeBatch ? buildBoxManifest(activeBatch.units) : []
 
   useEffect(() => {
     setWorkingPlan(plan)
@@ -1130,6 +1339,8 @@ function MultiPlanWorkspace({
       units: activeBatch.units,
       orderedUnitKeys: nextOrderedKeys,
       customContainer: workingPlan.containerType === 'CUSTOM' ? workingPlan.container : undefined,
+      remainingSpace: getRemainingSpaceFromPlan(workingPlan),
+      loadPriority: loadPriority,
     })
 
     const nextBatches = workingPlan.batches.map((batch) =>
@@ -1407,9 +1618,7 @@ function MultiPlanWorkspace({
                       <span>{selectedPlacementId ? '当前选中货物' : '当前动画聚焦'}</span>
                       <strong>{activePlacement.label}</strong>
                       <small>
-                        {activePlacement.piNo ? `PI ${activePlacement.piNo}` : ''}
-                        {activePlacement.piNo && activePlacement.boxNo ? ' · ' : ''}
-                        {activePlacement.boxNo ? `箱号 ${activePlacement.boxNo}` : ''}
+                        {formatPlacementMeta(activePlacement)}
                       </small>
                     </div>
                     <div>
@@ -1417,12 +1626,53 @@ function MultiPlanWorkspace({
                       <strong>
                         {activePlacement.lengthCm}×{activePlacement.widthCm}×{activePlacement.heightCm}cm
                       </strong>
+                      <small>
+                        {activePlacement.declaredQuantity} 件录入 · 箱数 {activePlacement.boxCount}
+                      </small>
                     </div>
                     <div>
                       <span>装入坐标</span>
                       <strong>
                         x:{activePlacement.xCm} / y:{activePlacement.yCm} / z:{activePlacement.zCm}
                       </strong>
+                      <small>{activePlacement.productCode ? `产品编码 ${activePlacement.productCode}` : '未填写产品编码'}</small>
+                    </div>
+                  </div>
+                ) : null}
+                {activeBoxManifest.length > 0 ? (
+                  <div className="box-manifest-card">
+                    <div className="sequence-header">
+                      <h3>当前柜箱号明细</h3>
+                      <span>{activeBoxManifest.length} 个箱号</span>
+                    </div>
+                    <div className="box-manifest-list">
+                      {activeBoxManifest.map((group) => (
+                        <div className="box-manifest-group" key={group.boxKey}>
+                          <div className="box-manifest-header">
+                            <strong>{group.displayBoxNo}</strong>
+                            <small>{group.totalLoadedUnits} 件装入当前柜</small>
+                          </div>
+                          <div className="box-manifest-items">
+                            {group.entries.map((entry) => (
+                              <div className="box-manifest-item" key={entry.entryKey}>
+                                <strong>{entry.label}</strong>
+                                <small>
+                                  {entry.piNo ? `PI ${entry.piNo}` : '未填PI'}
+                                  {' · '}
+                                  {entry.productCode ? `产品编码 ${entry.productCode}` : '未填编码'}
+                                </small>
+                                <small>
+                                  当前柜 {entry.loadedUnits} 件
+                                  {' · '}
+                                  录入数量 {entry.declaredQuantity}
+                                  {' · '}
+                                  箱数 {entry.boxCount}
+                                </small>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 ) : null}
@@ -1494,12 +1744,13 @@ function MultiPlanWorkspace({
                         <span>
                           {placement.label}
                           <small>
-                            {placement.piNo ? `PI ${placement.piNo}` : ''}
-                            {placement.piNo && placement.boxNo ? ' · ' : ''}
-                            {placement.boxNo ? `箱号 ${placement.boxNo}` : ''}
+                            {formatPlacementMeta(placement)}
                           </small>
                           <small>
                             {placement.lengthCm}×{placement.widthCm}×{placement.heightCm}cm
+                          </small>
+                          <small>
+                            {placement.declaredQuantity} 件录入 · 箱数 {placement.boxCount}
                           </small>
                         </span>
                         <em>
@@ -1548,6 +1799,78 @@ function packagingLabel(type: PackagingType) {
     default:
       return '裸货'
   }
+}
+
+type BoxManifestEntry = {
+  entryKey: string
+  label: string
+  piNo: string
+  productCode: string
+  loadedUnits: number
+  declaredQuantity: number
+  boxCount: number
+}
+
+type BoxManifestGroup = {
+  boxKey: string
+  displayBoxNo: string
+  totalLoadedUnits: number
+  entries: BoxManifestEntry[]
+}
+
+function buildBoxManifest(units: MultiContainerPlan['batches'][number]['units']): BoxManifestGroup[] {
+  const grouped = new Map<string, BoxManifestGroup>()
+
+  for (const unit of units) {
+    const normalizedBoxNo = unit.boxNo.trim()
+    const boxKey = normalizedBoxNo || `${unit.piNo || 'PI-UNKNOWN'}-${unit.productCode || unit.itemId}`
+    const displayBoxNo = normalizedBoxNo || '未填写箱号'
+
+    if (!grouped.has(boxKey)) {
+      grouped.set(boxKey, {
+        boxKey,
+        displayBoxNo,
+        totalLoadedUnits: 0,
+        entries: [],
+      })
+    }
+
+    const group = grouped.get(boxKey)!
+    group.totalLoadedUnits += 1
+
+    const entryKey = `${unit.itemId}-${unit.productCode}-${unit.piNo}`
+    const existing = group.entries.find((entry) => entry.entryKey === entryKey)
+    if (existing) {
+      existing.loadedUnits += 1
+      continue
+    }
+
+    group.entries.push({
+      entryKey,
+      label: unit.label,
+      piNo: unit.piNo,
+      productCode: unit.productCode,
+      loadedUnits: 1,
+      declaredQuantity: unit.declaredQuantity,
+      boxCount: unit.boxCount,
+    })
+  }
+
+  return [...grouped.values()]
+}
+
+function formatPlacementMeta(placement: {
+  piNo?: string
+  productCode?: string
+  boxNo?: string
+}) {
+  const parts = [
+    placement.piNo ? `PI ${placement.piNo}` : '',
+    placement.productCode ? `产品编码 ${placement.productCode}` : '',
+    placement.boxNo ? `箱号 ${placement.boxNo}` : '',
+  ].filter(Boolean)
+
+  return parts.join(' · ') || '未填写 PI / 产品编码 / 箱号'
 }
 
 function slugify(value: string) {
