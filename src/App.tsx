@@ -80,6 +80,7 @@ function App() {
     }
   })
   const [items, setItems] = useState<ItemInput[]>([createDefaultItem('主货物')])
+  const [expandedItemIds, setExpandedItemIds] = useState<string[]>([])
   const [algorithmPlan, setAlgorithmPlan] = useState<MultiContainerPlan | null>(null)
   const [qwenPlan, setQwenPlan] = useState<OllamaMultiContainerPlan | null>(null)
   const [qwenModel, setQwenModel] = useState('qwen3:8b')
@@ -123,6 +124,21 @@ function App() {
       JSON.stringify(customContainerPresets),
     )
   }, [customContainerPresets])
+
+  useEffect(() => {
+    if (items.length === 0) {
+      setExpandedItemIds([])
+      return
+    }
+
+    setExpandedItemIds((current) => {
+      if (current.length > 0) {
+        return current.filter((itemId) => items.some((item) => item.id === itemId))
+      }
+
+      return [items[0].id]
+    })
+  }, [items])
 
   function updateItem(
     itemId: string,
@@ -189,14 +205,14 @@ function App() {
   }
 
   function addItem() {
-    setItems((current) => [
-      ...current,
-      createDefaultItem(`货物 ${current.length + 1}`),
-    ])
+    const nextItem = createDefaultItem(`货物 ${items.length + 1}`)
+    setItems((current) => [...current, nextItem])
+    setExpandedItemIds((current) => [...current, nextItem.id])
   }
 
   function removeItem(itemId: string) {
     setItems((current) => current.filter((item) => item.id !== itemId))
+    setExpandedItemIds((current) => current.filter((currentId) => currentId !== itemId))
   }
 
   function saveCustomContainerPreset() {
@@ -310,6 +326,7 @@ function App() {
     try {
       const importedItems = await importPackingListFile(file)
       setItems(importedItems)
+      setExpandedItemIds(importedItems.slice(0, 3).map((item) => item.id))
       setAlgorithmPlan(null)
       setQwenPlan(null)
       setQwenError(null)
@@ -322,6 +339,22 @@ function App() {
     } catch (error) {
       setImportMessage(error instanceof Error ? error.message : '装箱单导入失败')
     }
+  }
+
+  function toggleItemExpanded(itemId: string) {
+    setExpandedItemIds((current) =>
+      current.includes(itemId)
+        ? current.filter((currentId) => currentId !== itemId)
+        : [...current, itemId],
+    )
+  }
+
+  function expandAllItems() {
+    setExpandedItemIds(items.map((item) => item.id))
+  }
+
+  function collapseAllItems() {
+    setExpandedItemIds(items.slice(0, 1).map((item) => item.id))
   }
 
   return (
@@ -691,56 +724,111 @@ function App() {
         <div className="items-panel">
           <div className="section-title">
             <h2>货物清单</h2>
-            <button className="secondary-button" onClick={addItem} type="button">
-              新增货物
-            </button>
+            <div className="items-panel-actions">
+              <button className="ghost-button" onClick={expandAllItems} type="button">
+                全部展开
+              </button>
+              <button className="ghost-button" onClick={collapseAllItems} type="button">
+                收起大部分
+              </button>
+              <button className="secondary-button" onClick={addItem} type="button">
+                新增货物
+              </button>
+            </div>
           </div>
+          <p className="hint">
+            当前展开 {expandedItemIds.length} / {items.length} 条。导入大装箱单后默认只展开前几条，避免整页一次性渲染过多表单导致卡顿。
+          </p>
 
           {items.map((item, index) => (
             <article className="cargo-card" key={item.id}>
               {(() => {
                 const resolved = resolveItemDimensions(item)
                 const singlePackedCbm = calculateItemCbm(resolved.packed)
+                const isExpanded = expandedItemIds.includes(item.id)
+                const supplierLabel = item.supplierFlag === 'other' ? '第三方' : '己方'
 
                 return (
                   <>
               <div className="cargo-card-header">
-                <input
-                  className="cargo-name"
-                  value={item.label}
-                  onChange={(event) => updateItem(item.id, 'label', event.target.value)}
-                />
-                {items.length > 1 ? (
-                  <div className="cargo-card-actions">
-                    <button
-                      className="ghost-button"
-                      disabled={index === 0}
-                      onClick={() => moveItem(item.id, 'up')}
-                      type="button"
-                    >
-                      上移
-                    </button>
-                    <button
-                      className="ghost-button"
-                      disabled={index === items.length - 1}
-                      onClick={() => moveItem(item.id, 'down')}
-                      type="button"
-                    >
-                      下移
-                    </button>
-                    <button
-                      className="ghost-button"
-                      onClick={() => removeItem(item.id)}
-                      type="button"
-                    >
-                      删除
-                    </button>
+                <div className="cargo-card-title">
+                  <input
+                    className="cargo-name"
+                    value={item.label}
+                    onChange={(event) => updateItem(item.id, 'label', event.target.value)}
+                  />
+                  <div className="cargo-summary-inline">
+                    <span>PI {item.piNo || '-'}</span>
+                    <span>编码 {item.productCode || '-'}</span>
+                    <span>箱号 {item.boxNo || '-'}</span>
+                    <span>{supplierLabel}</span>
                   </div>
-                ) : (
-                  <span className="cargo-index">#{index + 1}</span>
-                )}
+                </div>
+                <div className="cargo-card-actions">
+                  <button
+                    className="ghost-button"
+                    onClick={() => toggleItemExpanded(item.id)}
+                    type="button"
+                  >
+                    {isExpanded ? '收起明细' : '展开明细'}
+                  </button>
+                  {items.length > 1 ? (
+                    <>
+                      <button
+                        className="ghost-button"
+                        disabled={index === 0}
+                        onClick={() => moveItem(item.id, 'up')}
+                        type="button"
+                      >
+                        上移
+                      </button>
+                      <button
+                        className="ghost-button"
+                        disabled={index === items.length - 1}
+                        onClick={() => moveItem(item.id, 'down')}
+                        type="button"
+                      >
+                        下移
+                      </button>
+                      <button
+                        className="ghost-button"
+                        onClick={() => removeItem(item.id)}
+                        type="button"
+                      >
+                        删除
+                      </button>
+                    </>
+                  ) : (
+                    <span className="cargo-index">#{index + 1}</span>
+                  )}
+                </div>
               </div>
 
+              <div className="cargo-summary-grid">
+                <div>
+                  <span>外尺寸</span>
+                  <strong>
+                    {resolved.packed.lengthCm}×{resolved.packed.widthCm}×{resolved.packed.heightCm}cm
+                  </strong>
+                </div>
+                <div>
+                  <span>数量 / 箱数</span>
+                  <strong>
+                    {item.quantity} 件 / {item.boxCount ?? 1} 箱
+                  </strong>
+                </div>
+                <div>
+                  <span>单件 CBM</span>
+                  <strong>{singlePackedCbm.toFixed(3)}</strong>
+                </div>
+                <div>
+                  <span>单箱重量</span>
+                  <strong>{(item.singleWeightKg ?? 0).toFixed(1)} kg</strong>
+                </div>
+              </div>
+
+              {isExpanded ? (
+                <>
               <div className="dimensions-grid dimensions-grid-three">
                 <label>
                   PI序号
@@ -1019,6 +1107,12 @@ function App() {
               <p className="hint">
                 装箱单映射建议：常规货物直接填外箱尺寸；定制产品填预估成品尺寸后勾选纸皮箱、泡沫、木架/木箱并填写厚度；易碎品可勾选包泡沫；如果 Excel 备注列写“第三方”，导入后会自动归类成第三方货物。
               </p>
+                </>
+              ) : (
+                <p className="hint cargo-collapsed-hint">
+                  已收起详细参数。点击“展开明细”可编辑 PI、编码、箱号、包装方式和厚度。
+                </p>
+              )}
                   </>
                 )
               })()}
