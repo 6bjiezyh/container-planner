@@ -1,14 +1,12 @@
 import { useEffect, useState } from 'react'
 import './App.css'
 import {
-  calculateMultiContainerPlan,
   calculateContainerPlanWithSequenceForUnits,
   calculateItemCbm,
-  generatePackingSequence,
+  estimatePlacementCount,
   getContainerDimensions,
   getContainerLabel,
   nudgePlacementInPlan,
-  recommendContainerPlans,
   resolveItemDimensions,
   type ContainerRecommendation,
   type ContainerType,
@@ -33,6 +31,7 @@ import {
   type OllamaMultiContainerPlan,
 } from './lib/ollamaPlanner'
 import { importPackingListFile } from './lib/packingListImport'
+import type { PlannerWorkerRequest, PlannerWorkerResponse } from './workers/plannerWorker'
 
 type CustomContainerPreset = {
   id: string
@@ -45,6 +44,27 @@ const DEFAULT_CARTON_THICKNESS_CM = 0.5
 const DEFAULT_FOAM_THICKNESS_CM = 2
 const DEFAULT_WOOD_FRAME_THICKNESS_CM = 2
 const DEFAULT_WOOD_CRATE_THICKNESS_CM = 3
+const MAX_RECOMMENDATION_PLACEMENTS = 24
+
+function runPlannerWorker(payload: PlannerWorkerRequest) {
+  return new Promise<PlannerWorkerResponse>((resolve, reject) => {
+    const worker = new Worker(new URL('./workers/plannerWorker.ts', import.meta.url), {
+      type: 'module',
+    })
+
+    worker.onmessage = (event: MessageEvent<PlannerWorkerResponse>) => {
+      resolve(event.data)
+      worker.terminate()
+    }
+
+    worker.onerror = (event) => {
+      reject(event.error ?? new Error('装柜计算 Worker 执行失败'))
+      worker.terminate()
+    }
+
+    worker.postMessage(payload)
+  })
+}
 
 function App() {
   const [containerType, setContainerType] = useState<ContainerType>('40HQ')
@@ -85,9 +105,11 @@ function App() {
   const [qwenPlan, setQwenPlan] = useState<OllamaMultiContainerPlan | null>(null)
   const [qwenModel, setQwenModel] = useState('qwen3:8b')
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState('http://127.0.0.1:11434')
+  const [isPlanningLoading, setIsPlanningLoading] = useState(false)
   const [isQwenLoading, setIsQwenLoading] = useState(false)
   const [qwenError, setQwenError] = useState<string | null>(null)
   const [importMessage, setImportMessage] = useState<string | null>(null)
+  const [calculationMessage, setCalculationMessage] = useState<string | null>(null)
 
   const resolvedCustomContainer = containerType === 'CUSTOM' ? customContainer : undefined
   const container = getContainerDimensions(containerType, resolvedCustomContainer)
@@ -100,7 +122,7 @@ function App() {
         lengthCm: item.lengthCm,
         widthCm: item.widthCm,
         heightCm: item.heightCm,
-        quantity: item.quantity,
+        quantity: item.dimensionInputMode === 'outer_box' ? item.boxCount ?? 1 : item.quantity,
       }),
     0,
   )
@@ -281,22 +303,49 @@ function App() {
   }
 
   async function handleCalculate() {
-    setRecommendedContainers(
-      recommendContainerPlans({ items, splitMode, remainingSpace, loadPriority }).slice(0, 3),
-    )
-    setPackingSequence(generatePackingSequence(items, loadPriority))
+    const placementCount = estimatePlacementCount(items)
+    const shouldLimitRecommendations = placementCount > MAX_RECOMMENDATION_PLACEMENTS
 
-    const nextAlgorithmPlan = calculateMultiContainerPlan({
-      containerType,
-      items,
-      customContainer: resolvedCustomContainer,
-      splitMode,
-      remainingSpace,
-      loadPriority,
-    })
-    setAlgorithmPlan(nextAlgorithmPlan)
+    setIsPlanningLoading(true)
+    setCalculationMessage(
+      shouldLimitRecommendations
+        ? `当前装箱单共有 ${placementCount} 个待装箱体。为避免浏览器卡顿，本次只计算当前柜型，已跳过全柜型推荐。`
+        : null,
+    )
+    setRecommendedContainers([])
+    setPackingSequence([])
+    setAlgorithmPlan(null)
     setQwenPlan(null)
     setQwenError(null)
+    setIsQwenLoading(false)
+
+    try {
+      const {
+        algorithmPlan: nextAlgorithmPlan,
+        packingSequence: nextPackingSequence,
+        recommendedContainers: nextRecommendedContainers,
+      } = await runPlannerWorker({
+        containerType,
+        items,
+        customContainer: resolvedCustomContainer,
+        splitMode,
+        remainingSpace,
+        loadPriority,
+        shouldLimitRecommendations,
+      })
+
+      setAlgorithmPlan(nextAlgorithmPlan)
+      setPackingSequence(nextPackingSequence)
+      setRecommendedContainers(nextRecommendedContainers)
+    } catch (error) {
+      setIsPlanningLoading(false)
+      setCalculationMessage(
+        error instanceof Error ? `装柜计算失败：${error.message}` : '装柜计算失败，请重试。',
+      )
+      return
+    }
+
+    setIsPlanningLoading(false)
     setIsQwenLoading(true)
 
     try {
@@ -332,6 +381,7 @@ function App() {
       setQwenError(null)
       setRecommendedContainers([])
       setPackingSequence([])
+      setCalculationMessage(null)
       setPlanReference(file.name.replace(/\.[^.]+$/, ''))
       setImportMessage(
         `已导入 ${importedItems.length} 条货物。为避免大装箱单卡顿，请点击“生成双方案”后再计算推荐柜型和动画。`,
@@ -425,6 +475,7 @@ function App() {
           <div className="section-title">
             <h2>柜型推荐</h2>
           </div>
+          {calculationMessage ? <p className="hint">{calculationMessage}</p> : null}
           <div className="recommendation-list">
             {recommendedContainers.length === 0 ? (
               <p className="hint">导入或修改数据后，点击“生成双方案”再刷新推荐柜型。</p>
@@ -1121,10 +1172,22 @@ function App() {
         </div>
 
         <div className="action-bar">
-          <button className="primary-button" onClick={handleCalculate} type="button">
-            生成双方案
+          <button
+            className="primary-button"
+            disabled={isPlanningLoading || isQwenLoading}
+            onClick={handleCalculate}
+            type="button"
+          >
+            {isPlanningLoading ? '本地方案计算中...' : isQwenLoading ? 'Qwen 分析中...' : '生成双方案'}
           </button>
         </div>
+
+        {isPlanningLoading ? (
+          <p className="hint">正在计算本地装柜方案，大装箱单可能需要几秒，请勿关闭页面。</p>
+        ) : null}
+        {!isPlanningLoading && isQwenLoading ? (
+          <p className="hint">本地方案已完成，正在请求 Ollama/Qwen 选择候选方案。</p>
+        ) : null}
 
         <div className="metrics-strip">
           <div>
@@ -1186,7 +1249,11 @@ function App() {
 
         <div className="compare-grid">
           <MultiPlanWorkspace
-            emptyMessage="点击“生成双方案”后，这里会展示本地装箱算法的 3D 动画和 GIF 导出。"
+            emptyMessage={
+              isPlanningLoading
+                ? '正在计算本地装箱算法方案，请稍候...'
+                : '点击“生成双方案”后，这里会展示本地装箱算法的 3D 动画和 GIF 导出。'
+            }
             exportPrefix={planReference}
             loadPriority={loadPriority}
             plan={algorithmPlan}

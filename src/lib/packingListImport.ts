@@ -78,7 +78,7 @@ export function parsePackingListRows(rows: Array<Array<string | number | null>>)
     const boxCount = toNumber(merged.box_count) || 1
     const totalWeight = toNumber(merged.total_weight)
     const singleWeight =
-      toNumber(merged.single_weight) || (totalWeight > 0 && quantity > 0 ? totalWeight / quantity : 1)
+      toNumber(merged.single_weight) || (totalWeight > 0 && boxCount > 0 ? totalWeight / boxCount : 1)
 
     items.push({
       id: createStableId(String(merged.product_code || merged.product_name), items.length),

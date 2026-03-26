@@ -660,6 +660,14 @@ export function generatePackingSequence(
     }))
 }
 
+export function estimatePlacementCount(items: ItemInput[]) {
+  return items.reduce((sum, item) => {
+    const placementCount =
+      item.dimensionInputMode === 'outer_box' ? Math.max(1, item.boxCount ?? 1) : item.quantity
+    return sum + placementCount
+  }, 0)
+}
+
 export function recommendContainerPlans({
   items,
   splitMode = 'mixed',
@@ -961,7 +969,12 @@ function expandUnits(items: ItemInput[]): ExpandedUnit[] {
   const units: ExpandedUnit[] = []
 
   for (const item of items) {
-    for (let index = 0; index < item.quantity; index += 1) {
+    const placementCount =
+      item.dimensionInputMode === 'outer_box' ? Math.max(1, item.boxCount ?? 1) : item.quantity
+    const distributedQuantities = distributeDeclaredQuantities(item.quantity, placementCount)
+    const boxNumbers = expandBoxNumbers(item.boxNo, placementCount, item.id)
+
+    for (let index = 0; index < placementCount; index += 1) {
       const resolved = resolveItemDimensions(item)
       units.push({
         itemId: item.id,
@@ -971,9 +984,9 @@ function expandUnits(items: ItemInput[]): ExpandedUnit[] {
         supplierFlag: item.supplierFlag ?? 'self',
         singleWeightKg: item.singleWeightKg ?? 1,
         productCode: item.productCode ?? '',
-        boxNo: item.boxNo ?? `${item.id}-${index + 1}`,
+        boxNo: boxNumbers[index] ?? `${item.id}-${index + 1}`,
         boxCount: item.boxCount ?? 1,
-        declaredQuantity: item.quantity,
+        declaredQuantity: distributedQuantities[index] ?? item.quantity,
         piNo: item.piNo ?? '',
         packagingVisualType: getPackagingVisualType(item),
         bare: resolved.input,
@@ -983,6 +996,77 @@ function expandUnits(items: ItemInput[]): ExpandedUnit[] {
   }
 
   return units
+}
+
+function distributeDeclaredQuantities(totalQuantity: number, placementCount: number) {
+  const safePlacementCount = Math.max(1, placementCount)
+  const base = Math.floor(totalQuantity / safePlacementCount)
+  let remainder = totalQuantity % safePlacementCount
+
+  return Array.from({ length: safePlacementCount }, () => {
+    const next = base + (remainder > 0 ? 1 : 0)
+    if (remainder > 0) {
+      remainder -= 1
+    }
+    return next
+  })
+}
+
+function expandBoxNumbers(rawBoxNo: string | undefined, placementCount: number, itemId: string) {
+  const fallback = Array.from({ length: Math.max(1, placementCount) }, (_, index) => `${itemId}-${index + 1}`)
+  const normalized = (rawBoxNo ?? '').trim()
+
+  if (!normalized) {
+    return fallback
+  }
+
+  const directParts = normalized
+    .split(/[、,，/]/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+
+  let expandedParts: string[] = []
+
+  for (const part of directParts.length > 0 ? directParts : [normalized]) {
+    const rangeMatch = part.match(/^([A-Za-z]*)(\d+)\s*-\s*([A-Za-z]*)(\d+)$/)
+    if (!rangeMatch) {
+      expandedParts.push(part)
+      continue
+    }
+
+    const [, startPrefix, startRaw, endPrefix, endRaw] = rangeMatch
+    const prefix = startPrefix || endPrefix
+    if ((startPrefix && endPrefix && startPrefix !== endPrefix) || !prefix) {
+      expandedParts.push(part)
+      continue
+    }
+
+    const start = Number(startRaw)
+    const end = Number(endRaw)
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+      expandedParts.push(part)
+      continue
+    }
+
+    const width = Math.max(startRaw.length, endRaw.length)
+    for (let current = start; current <= end; current += 1) {
+      expandedParts.push(`${prefix}${String(current).padStart(width, '0')}`)
+    }
+  }
+
+  if (expandedParts.length === placementCount) {
+    return expandedParts
+  }
+
+  if (expandedParts.length === 1 && placementCount > 1) {
+    return fallback.map((_, index) => `${expandedParts[0]}-${index + 1}`)
+  }
+
+  if (expandedParts.length > placementCount) {
+    return expandedParts.slice(0, placementCount)
+  }
+
+  return [...expandedParts, ...fallback.slice(expandedParts.length)]
 }
 
 function getPackagingPriority(type: PackagingVisualType) {

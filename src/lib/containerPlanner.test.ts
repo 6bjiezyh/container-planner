@@ -5,6 +5,7 @@ import {
   calculateContainerPlanWithSequence,
   calculateMultiContainerPlan,
   calculateItemCbm,
+  estimatePlacementCount,
   generateContainerPlanCandidates,
   nudgePlacementInPlan,
   resolveItemDimensions,
@@ -125,6 +126,74 @@ describe('container planner rules', () => {
     expect(plan.summary.totalUnits).toBe(8)
     expect(plan.summary.utilizationRatio).toBeGreaterThan(0)
     expect(plan.placements).toHaveLength(8)
+  })
+
+  it('treats outer-box packing list rows as box-count placements instead of product quantity placements', () => {
+    const plan = calculateContainerPlan({
+      containerType: '20GP',
+      items: [
+        {
+          id: 'SKU-BOX',
+          label: '外箱货物',
+          lengthCm: 120,
+          widthCm: 80,
+          heightCm: 100,
+          quantity: 10,
+          boxCount: 2,
+          boxNo: 'A01-A02',
+          packagingType: 'none',
+          dimensionInputMode: 'outer_box',
+          fragile: false,
+          cartonEnabled: false,
+          cartonThicknessCm: 0,
+          foamEnabled: false,
+          foamThicknessCm: 0,
+        },
+      ],
+    })
+
+    expect(plan.summary.totalUnits).toBe(2)
+    expect(plan.placements).toHaveLength(2)
+    expect(plan.placements.map((placement) => placement.boxNo)).toEqual(['A01', 'A02'])
+    expect(plan.placements.map((placement) => placement.declaredQuantity)).toEqual([5, 5])
+  })
+
+  it('estimates calculation workload from box count for outer-box rows', () => {
+    expect(
+      estimatePlacementCount([
+        {
+          id: 'SKU-BOX',
+          label: '外箱货物',
+          lengthCm: 120,
+          widthCm: 80,
+          heightCm: 100,
+          quantity: 10,
+          boxCount: 2,
+          packagingType: 'none',
+          dimensionInputMode: 'outer_box',
+          fragile: false,
+          cartonEnabled: false,
+          cartonThicknessCm: 0,
+          foamEnabled: false,
+          foamThicknessCm: 0,
+        },
+        {
+          id: 'SKU-EST',
+          label: '估算货物',
+          lengthCm: 60,
+          widthCm: 40,
+          heightCm: 30,
+          quantity: 3,
+          packagingType: 'none',
+          dimensionInputMode: 'estimate',
+          fragile: false,
+          cartonEnabled: false,
+          cartonThicknessCm: 0,
+          foamEnabled: false,
+          foamThicknessCm: 0,
+        },
+      ]),
+    ).toBe(5)
   })
 
   it('searches across strategies instead of stopping at the first greedy packing order', () => {
