@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Canvas } from '@react-three/fiber'
-import { Billboard, Edges, OrbitControls, PerspectiveCamera, Text } from '@react-three/drei'
+import { Edges, OrbitControls, PerspectiveCamera, Text } from '@react-three/drei'
 import { createSceneData } from '../lib/sceneData'
 import type { ContainerPlan } from '../lib/containerPlanner'
 
@@ -27,22 +27,12 @@ export function ScenePreview({
     activePlacementId ??
     visibleBoxes.at(-1)?.id ??
     null
-  const focusedBox = visibleBoxes.find((box) => box.id === focusedId) ?? null
   const cameraPosition = getCameraPosition(viewPreset, scene?.container.height ?? 2.4)
 
   return (
     <div className="scene-shell">
       {scene ? (
         <>
-          <div className="scene-hud scene-hud-container">
-            <strong>{scene.container.label}</strong>
-            <span>{scene.container.dimensionLabel}</span>
-            {scene.packingSpace.dimensionLabel !== scene.container.dimensionLabel ? (
-              <small>
-                {scene.packingSpace.label} {scene.packingSpace.dimensionLabel}
-              </small>
-            ) : null}
-          </div>
           <div className="scene-hud scene-hud-hint">拖拽旋转视角，点击货物查看尺寸</div>
           <div className="scene-hud scene-hud-controls">
             <div className="scene-control-group">
@@ -72,24 +62,10 @@ export function ScenePreview({
               className={showShellFill ? 'scene-pill active' : 'scene-pill'}
               onClick={() => setShowShellFill((current) => !current)}
               type="button"
-            >
-              {showShellFill ? '显示柜体实体' : '仅线框'}
-            </button>
-          </div>
-          {focusedBox ? (
-            <div className="scene-hud scene-hud-box">
-              <strong>{focusedBox.label}</strong>
-              {focusedBox.productCode ? <span>产品编码 {focusedBox.productCode}</span> : null}
-              {focusedBox.piNo || focusedBox.boxNo ? (
-                <span>
-                  {focusedBox.piNo ? `PI ${focusedBox.piNo}` : ''}
-                  {focusedBox.piNo && focusedBox.boxNo ? ' · ' : ''}
-                  {focusedBox.boxNo ? `箱号 ${focusedBox.boxNo}` : ''}
-                </span>
-              ) : null}
-              <span>{focusedBox.dimensionLabel}</span>
+              >
+                {showShellFill ? '显示柜体实体' : '仅线框'}
+              </button>
             </div>
-          ) : null}
         </>
       ) : null}
       <Canvas dpr={[1, 2]} shadows>
@@ -411,9 +387,11 @@ function BoxNumberLabel({
   }
 }) {
   const fontSize = Math.max(Math.min(box.size.x, box.size.y, box.size.z) * 0.18, 0.16)
+  const frontOffset = box.size.z / 2 + 0.01
+  const sideOffset = box.size.x / 2 + 0.01
 
   return (
-    <Billboard follow lockX={false} lockY={false} lockZ={false} position={[0, 0, 0]}>
+    <>
       <Text
         anchorX="center"
         anchorY="middle"
@@ -422,10 +400,25 @@ function BoxNumberLabel({
         maxWidth={Math.max(box.size.x * 0.7, fontSize)}
         outlineColor="#fff8f2"
         outlineWidth={fontSize * 0.08}
+        position={[0, 0, frontOffset]}
         renderOrder={10}
       >
         {box.boxNo}
       </Text>
-    </Billboard>
+      <Text
+        anchorX="center"
+        anchorY="middle"
+        color="#d9534f"
+        fontSize={fontSize * 0.88}
+        maxWidth={Math.max(box.size.z * 0.7, fontSize)}
+        outlineColor="#fff8f2"
+        outlineWidth={fontSize * 0.08}
+        position={[sideOffset, 0, 0]}
+        renderOrder={10}
+        rotation={[0, Math.PI / 2, 0]}
+      >
+        {box.boxNo}
+      </Text>
+    </>
   )
 }
