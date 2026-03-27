@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import {
   calculateContainerPlanWithSequenceForUnits,
@@ -8,6 +8,7 @@ import {
   getContainerLabel,
   nudgePlacementInPlan,
   resolveItemDimensions,
+  type BoxContentEntry,
   type ContainerRecommendation,
   type ContainerType,
   type Dimension3D,
@@ -45,6 +46,8 @@ const DEFAULT_FOAM_THICKNESS_CM = 2
 const DEFAULT_WOOD_FRAME_THICKNESS_CM = 2
 const DEFAULT_WOOD_CRATE_THICKNESS_CM = 3
 const MAX_RECOMMENDATION_PLACEMENTS = 24
+const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434'
+const DEFAULT_QWEN_MODEL = 'qwen3:8b'
 
 function runPlannerWorker(payload: PlannerWorkerRequest) {
   return new Promise<PlannerWorkerResponse>((resolve, reject) => {
@@ -103,13 +106,14 @@ function App() {
   const [expandedItemIds, setExpandedItemIds] = useState<string[]>([])
   const [algorithmPlan, setAlgorithmPlan] = useState<MultiContainerPlan | null>(null)
   const [qwenPlan, setQwenPlan] = useState<OllamaMultiContainerPlan | null>(null)
-  const [qwenModel, setQwenModel] = useState('qwen3:8b')
-  const [ollamaBaseUrl, setOllamaBaseUrl] = useState('http://127.0.0.1:11434')
+  const [qwenModel, setQwenModel] = useState(DEFAULT_QWEN_MODEL)
+  const [ollamaBaseUrl, setOllamaBaseUrl] = useState(DEFAULT_OLLAMA_BASE_URL)
   const [isPlanningLoading, setIsPlanningLoading] = useState(false)
   const [isQwenLoading, setIsQwenLoading] = useState(false)
   const [qwenError, setQwenError] = useState<string | null>(null)
   const [importMessage, setImportMessage] = useState<string | null>(null)
   const [calculationMessage, setCalculationMessage] = useState<string | null>(null)
+  const itemsListRef = useRef<HTMLDivElement | null>(null)
 
   const resolvedCustomContainer = containerType === 'CUSTOM' ? customContainer : undefined
   const container = getContainerDimensions(containerType, resolvedCustomContainer)
@@ -230,6 +234,14 @@ function App() {
     const nextItem = createDefaultItem(`货物 ${items.length + 1}`)
     setItems((current) => [...current, nextItem])
     setExpandedItemIds((current) => [...current, nextItem.id])
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        itemsListRef.current?.scrollTo({
+          top: itemsListRef.current.scrollHeight,
+          behavior: 'smooth',
+        })
+      })
+    })
   }
 
   function removeItem(itemId: string) {
@@ -405,6 +417,11 @@ function App() {
 
   function collapseAllItems() {
     setExpandedItemIds(items.slice(0, 1).map((item) => item.id))
+  }
+
+  function restoreQwenDefaults() {
+    setOllamaBaseUrl(DEFAULT_OLLAMA_BASE_URL)
+    setQwenModel(DEFAULT_QWEN_MODEL)
   }
 
   return (
@@ -745,33 +762,6 @@ function App() {
           </div>
         </div>
 
-        <div className="field-group">
-          <div className="section-title">
-            <h2>Qwen 方案</h2>
-          </div>
-          <div className="dimensions-grid dimensions-grid-two">
-            <label>
-              Ollama 地址
-              <input
-                type="text"
-                value={ollamaBaseUrl}
-                onChange={(event) => setOllamaBaseUrl(event.target.value)}
-              />
-            </label>
-            <label>
-              模型名
-              <input
-                type="text"
-                value={qwenModel}
-                onChange={(event) => setQwenModel(event.target.value)}
-              />
-            </label>
-          </div>
-          <p className="hint">
-            默认走本机 Ollama：{ollamaBaseUrl}/api/generate。Qwen 从多套候选装柜方案里选出它认为更合理的一套，最终坐标仍由本地装箱引擎生成。
-          </p>
-        </div>
-
         <div className="items-panel">
           <div className="section-title">
             <h2>货物清单</h2>
@@ -790,9 +780,21 @@ function App() {
           <p className="hint">
             当前展开 {expandedItemIds.length} / {items.length} 条。导入大装箱单后默认只展开前几条，避免整页一次性渲染过多表单导致卡顿。
           </p>
+          <div className="items-panel-notes">
+            <p className="hint">
+              定制产品可先录入预估成品尺寸，再勾选纸皮箱、泡沫以及木架/木箱并填写厚度，系统会按层级自动外拓。
+            </p>
+            <p className="hint">
+              直接填写外箱尺寸时，默认按纸皮箱/外箱尺寸计算；如出货前还要加木架或木箱，可继续勾选并填写厚度。
+            </p>
+            <p className="hint">
+              装箱单映射建议：常规货物直接填外箱尺寸；定制产品填预估成品尺寸后再补包装层；备注列写“第三方”会自动归类成第三方货物。
+            </p>
+          </div>
 
-          {items.map((item, index) => (
-            <article className="cargo-card" key={item.id}>
+          <div className="items-panel-list" ref={itemsListRef}>
+            {items.map((item, index) => (
+              <article className="cargo-card" key={item.id}>
               {(() => {
                 const resolved = resolveItemDimensions(item)
                 const singlePackedCbm = calculateItemCbm(resolved.packed)
@@ -1133,31 +1135,6 @@ function App() {
                 ) : null}
               </div>
 
-              {item.dimensionInputMode === 'estimate' ? (
-                <>
-                  <p className="hint">
-                    定制产品可先录入预估成品尺寸，再勾选纸皮箱、泡沫以及木架/木箱并填写厚度，系统会按层级自动外拓。
-                  </p>
-                </>
-              ) : (
-                <p className="hint">
-                  当前输入即纸皮箱/外箱尺寸；如需出货前再加木架或木箱，可继续选择包装类型并填写厚度。
-                </p>
-              )}
-
-              {item.dimensionInputMode === 'estimate' ? (
-                <>
-                  <div className="packaging-row">
-                    <span className="hint">
-                      纸皮箱和泡沫只在“按产品尺寸估算包装”模式下参与扩尺；外箱模式默认按成品外箱计算。
-                    </span>
-                  </div>
-                </>
-              ) : null}
-
-              <p className="hint">
-                装箱单映射建议：常规货物直接填外箱尺寸；定制产品填预估成品尺寸后勾选纸皮箱、泡沫、木架/木箱并填写厚度；易碎品可勾选包泡沫；如果 Excel 备注列写“第三方”，导入后会自动归类成第三方货物。
-              </p>
                 </>
               ) : (
                 <p className="hint cargo-collapsed-hint">
@@ -1167,8 +1144,9 @@ function App() {
                   </>
                 )
               })()}
-            </article>
-          ))}
+              </article>
+            ))}
+          </div>
         </div>
 
         <div className="action-bar">
@@ -1219,10 +1197,9 @@ function App() {
                     {step.label}
                     <small>
                       {formatPlacementMeta(step)}
-                      {' · '}
-                      录入数量 {step.declaredQuantity}
-                      {' · '}
-                      箱数 {step.boxCount}
+                    </small>
+                    <small>
+                      {formatBoxSummary(step)}
                     </small>
                     <small>
                       {step.packed.lengthCm}×{step.packed.widthCm}×{step.packed.heightCm}cm
@@ -1235,6 +1212,41 @@ function App() {
           </div>
           <p className="hint">
             打包顺序会优先处理木箱/木架等定制包装，再到纸箱与泡沫，易碎件默认后移，第三方货物会单独标注，方便后续拼柜。
+          </p>
+        </div>
+
+        <div className="field-group qwen-settings-group">
+          <div className="section-title">
+            <div>
+              <h2>Qwen 方案设置</h2>
+              <p className="hint qwen-settings-hint">
+                这块一般不用经常改，放在底部作为高级设置。如误改，可直接恢复默认。
+              </p>
+            </div>
+            <button className="ghost-button" onClick={restoreQwenDefaults} type="button">
+              恢复默认
+            </button>
+          </div>
+          <div className="dimensions-grid dimensions-grid-two">
+            <label>
+              Ollama 地址
+              <input
+                type="text"
+                value={ollamaBaseUrl}
+                onChange={(event) => setOllamaBaseUrl(event.target.value)}
+              />
+            </label>
+            <label>
+              模型名
+              <input
+                type="text"
+                value={qwenModel}
+                onChange={(event) => setQwenModel(event.target.value)}
+              />
+            </label>
+          </div>
+          <p className="hint">
+            默认走本机 Ollama：{DEFAULT_OLLAMA_BASE_URL}/api/generate。默认模型是 {DEFAULT_QWEN_MODEL}。Qwen 只负责从候选装柜方案里做比较和选择，最终坐标仍由本地装箱引擎生成。
           </p>
         </div>
       </section>
@@ -1787,9 +1799,7 @@ function MultiPlanWorkspace({
                       <strong>
                         {activePlacement.lengthCm}×{activePlacement.widthCm}×{activePlacement.heightCm}cm
                       </strong>
-                      <small>
-                        {activePlacement.declaredQuantity} 件录入 · 箱数 {activePlacement.boxCount}
-                      </small>
+                      <small>{formatBoxSummary(activePlacement)}</small>
                     </div>
                     <div>
                       <span>装入坐标</span>
@@ -1811,7 +1821,9 @@ function MultiPlanWorkspace({
                         <div className="box-manifest-group" key={group.boxKey}>
                           <div className="box-manifest-header">
                             <strong>{group.displayBoxNo}</strong>
-                            <small>{group.totalLoadedUnits} 件装入当前柜</small>
+                            <small>
+                              {group.entries.length} 种产品 · 箱内合计 {group.totalQuantityInBox} 件
+                            </small>
                           </div>
                           <div className="box-manifest-items">
                             {group.entries.map((entry) => (
@@ -1823,11 +1835,8 @@ function MultiPlanWorkspace({
                                   {entry.productCode ? `产品编码 ${entry.productCode}` : '未填编码'}
                                 </small>
                                 <small>
-                                  当前柜 {entry.loadedUnits} 件
-                                  {' · '}
-                                  录入数量 {entry.declaredQuantity}
-                                  {' · '}
-                                  箱数 {entry.boxCount}
+                                  箱内数量 {entry.quantityInBox} 件
+                                  {entry.supplierFlag === 'other' ? ' · 第三方' : ' · 己方'}
                                 </small>
                               </div>
                             ))}
@@ -1911,7 +1920,7 @@ function MultiPlanWorkspace({
                             {placement.lengthCm}×{placement.widthCm}×{placement.heightCm}cm
                           </small>
                           <small>
-                            {placement.declaredQuantity} 件录入 · 箱数 {placement.boxCount}
+                            {formatBoxSummary(placement)}
                           </small>
                         </span>
                         <em>
@@ -1967,15 +1976,14 @@ type BoxManifestEntry = {
   label: string
   piNo: string
   productCode: string
-  loadedUnits: number
-  declaredQuantity: number
-  boxCount: number
+  quantityInBox: number
+  supplierFlag: SupplierFlag
 }
 
 type BoxManifestGroup = {
   boxKey: string
   displayBoxNo: string
-  totalLoadedUnits: number
+  totalQuantityInBox: number
   entries: BoxManifestEntry[]
 }
 
@@ -1991,44 +1999,109 @@ function buildBoxManifest(units: MultiContainerPlan['batches'][number]['units'])
       grouped.set(boxKey, {
         boxKey,
         displayBoxNo,
-        totalLoadedUnits: 0,
+        totalQuantityInBox: 0,
         entries: [],
       })
     }
 
     const group = grouped.get(boxKey)!
-    group.totalLoadedUnits += 1
+    const contents = getPlacementContents(unit)
+    group.totalQuantityInBox += contents.reduce((sum, entry) => sum + entry.declaredQuantity, 0)
 
-    const entryKey = `${unit.itemId}-${unit.productCode}-${unit.piNo}`
-    const existing = group.entries.find((entry) => entry.entryKey === entryKey)
-    if (existing) {
-      existing.loadedUnits += 1
-      continue
+    for (const content of contents) {
+      const entryKey = `${content.piNo || 'NO-PI'}-${content.productCode || 'NO-CODE'}-${content.label}`
+      const existing = group.entries.find((entry) => entry.entryKey === entryKey)
+      if (existing) {
+        existing.quantityInBox += content.declaredQuantity
+        continue
+      }
+
+      group.entries.push({
+        entryKey,
+        label: content.label,
+        piNo: content.piNo,
+        productCode: content.productCode,
+        quantityInBox: content.declaredQuantity,
+        supplierFlag: content.supplierFlag,
+      })
     }
-
-    group.entries.push({
-      entryKey,
-      label: unit.label,
-      piNo: unit.piNo,
-      productCode: unit.productCode,
-      loadedUnits: 1,
-      declaredQuantity: unit.declaredQuantity,
-      boxCount: unit.boxCount,
-    })
   }
 
   return [...grouped.values()]
 }
 
-function formatPlacementMeta(placement: {
+function getPlacementContents(placement: {
+  label?: string
   piNo?: string
   productCode?: string
   boxNo?: string
+  declaredQuantity?: number
+  supplierFlag?: SupplierFlag
+  contents?: BoxContentEntry[]
 }) {
+  if (placement.contents && placement.contents.length > 0) {
+    return placement.contents
+  }
+
+  return [
+    {
+      entryId: `${placement.productCode || placement.piNo || placement.label || 'ITEM'}-${placement.boxNo || 'BOX'}`,
+      label: placement.label || '未命名货物',
+      piNo: placement.piNo || '',
+      productCode: placement.productCode || '',
+      declaredQuantity: placement.declaredQuantity ?? 0,
+      supplierFlag: placement.supplierFlag ?? 'self',
+      fragile: false,
+    },
+  ]
+}
+
+function getPlacementTotalQuantity(placement: {
+  label?: string
+  piNo?: string
+  productCode?: string
+  boxNo?: string
+  declaredQuantity?: number
+  supplierFlag?: SupplierFlag
+  contents?: BoxContentEntry[]
+}) {
+  return getPlacementContents(placement).reduce((sum, entry) => sum + entry.declaredQuantity, 0)
+}
+
+function formatBoxSummary(placement: {
+  label?: string
+  piNo?: string
+  productCode?: string
+  boxNo?: string
+  declaredQuantity?: number
+  supplierFlag?: SupplierFlag
+  contents?: BoxContentEntry[]
+}) {
+  const contents = getPlacementContents(placement)
+  return `箱内合计 ${getPlacementTotalQuantity(placement)} 件 · ${contents.length} 种产品`
+}
+
+function formatPlacementMeta(placement: {
+  label?: string
+  piNo?: string
+  productCode?: string
+  boxNo?: string
+  declaredQuantity?: number
+  supplierFlag?: SupplierFlag
+  contents?: BoxContentEntry[]
+}) {
+  const boxNo = placement.boxNo?.trim()
+  const contents = getPlacementContents(placement)
+
+  if (contents.length > 1) {
+    return [boxNo ? `箱号 ${boxNo}` : '未填写箱号', '混装箱'].join(' · ')
+  }
+
+  const content = contents[0]
   const parts = [
-    placement.piNo ? `PI ${placement.piNo}` : '',
-    placement.productCode ? `产品编码 ${placement.productCode}` : '',
-    placement.boxNo ? `箱号 ${placement.boxNo}` : '',
+    content.piNo ? `PI ${content.piNo}` : '',
+    content.productCode ? `产品编码 ${content.productCode}` : '',
+    boxNo ? `箱号 ${boxNo}` : '',
   ].filter(Boolean)
 
   return parts.join(' · ') || '未填写 PI / 产品编码 / 箱号'

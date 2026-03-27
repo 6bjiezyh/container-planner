@@ -25,16 +25,13 @@ export async function importPackingListFile(file: File): Promise<ItemInput[]> {
   const buffer = await file.arrayBuffer()
   const workbook = XLSX.read(buffer, { type: 'array' })
   const sheetName = workbook.SheetNames[0]
+  const sheet = sheetName ? workbook.Sheets[sheetName] : undefined
 
-  if (!sheetName) {
+  if (!sheetName || !sheet) {
     throw new Error('装箱单里没有可读取的工作表')
   }
 
-  const rows = XLSX.utils.sheet_to_json<(string | number | null)[]>(workbook.Sheets[sheetName], {
-    header: 1,
-    raw: false,
-    defval: '',
-  })
+  const rows = sheetToRowsWithFilledMerges(sheet)
 
   return parsePackingListRows(rows)
 }
@@ -74,35 +71,46 @@ export function parsePackingListRows(rows: Array<Array<string | number | null>>)
       continue
     }
 
-    const quantity = toNumber(merged.quantity) || toNumber(merged.load_qty) || 1
+    const quantity = toNumber(merged.load_qty) || toNumber(merged.quantity) || 1
     const boxCount = toNumber(merged.box_count) || 1
     const totalWeight = toNumber(merged.total_weight)
     const singleWeight =
       toNumber(merged.single_weight) || (totalWeight > 0 && boxCount > 0 ? totalWeight / boxCount : 1)
-
-    items.push({
-      id: createStableId(String(merged.product_code || merged.product_name), items.length),
-      label: String(merged.product_name),
-      piNo: String(merged.pi_no || ''),
-      productCode: String(merged.product_code || ''),
-      boxNo: String(merged.box_no || ''),
+    const expandedBoxNumbers = expandImportedBoxNumbers(
+      String(merged.box_no || ''),
       boxCount,
-      singleWeightKg: round(singleWeight, 2),
-      orderId: '',
-      supplierFlag: resolveSupplierFlag(merged.remark),
-      lengthCm: toNumber(merged.length_cm),
-      widthCm: toNumber(merged.width_cm),
-      heightCm: toNumber(merged.height_cm),
-      quantity,
-      packagingType: 'none',
-      dimensionInputMode: 'outer_box',
-      fragile: false,
-      cartonEnabled: false,
-      cartonThicknessCm: 0.5,
-      foamEnabled: false,
-      foamThicknessCm: 2,
-      woodThicknessCm: 3,
-    })
+      String(merged.product_code || merged.product_name || `BOX-${items.length + 1}`),
+    )
+    const distributedQuantities = distributeDeclaredQuantities(quantity, expandedBoxNumbers.length)
+
+    for (let index = 0; index < expandedBoxNumbers.length; index += 1) {
+      items.push({
+        id: createStableId(
+          `${String(merged.product_code || merged.product_name)}-${expandedBoxNumbers[index]}`,
+          items.length,
+        ),
+        label: String(merged.product_name),
+        piNo: String(merged.pi_no || ''),
+        productCode: String(merged.product_code || ''),
+        boxNo: expandedBoxNumbers[index],
+        boxCount: 1,
+        singleWeightKg: round(singleWeight, 2),
+        orderId: '',
+        supplierFlag: resolveSupplierFlag(merged.remark),
+        lengthCm: toNumber(merged.length_cm),
+        widthCm: toNumber(merged.width_cm),
+        heightCm: toNumber(merged.height_cm),
+        quantity: distributedQuantities[index] || 1,
+        packagingType: 'none',
+        dimensionInputMode: 'outer_box',
+        fragile: false,
+        cartonEnabled: false,
+        cartonThicknessCm: 0.5,
+        foamEnabled: false,
+        foamThicknessCm: 2,
+        woodThicknessCm: 3,
+      })
+    }
   }
 
   if (!items.length) {
@@ -141,6 +149,31 @@ function toRecord(headers: string[], row: Array<string | number | null>) {
   }, {})
 }
 
+function sheetToRowsWithFilledMerges(sheet: XLSX.WorkSheet) {
+  const rows = XLSX.utils.sheet_to_json<(string | number | null)[]>(sheet, {
+    header: 1,
+    raw: false,
+    defval: '',
+  })
+  const merges = sheet['!merges'] ?? []
+
+  for (const merge of merges) {
+    const topLeftValue = rows[merge.s.r]?.[merge.s.c] ?? ''
+    for (let rowIndex = merge.s.r; rowIndex <= merge.e.r; rowIndex += 1) {
+      if (!rows[rowIndex]) {
+        rows[rowIndex] = []
+      }
+      for (let colIndex = merge.s.c; colIndex <= merge.e.c; colIndex += 1) {
+        if (rows[rowIndex][colIndex] === '' || rows[rowIndex][colIndex] == null) {
+          rows[rowIndex][colIndex] = topLeftValue
+        }
+      }
+    }
+  }
+
+  return rows
+}
+
 function normalizeText(value: string | number | null | undefined) {
   return String(value ?? '').replace(/\s+/g, '').trim()
 }
@@ -158,6 +191,80 @@ function createStableId(seed: string, index: number) {
   return `${seed || 'ITEM'}-${index + 1}`
     .replace(/[^\w\u4e00-\u9fa5-]+/g, '-')
     .replace(/^-+|-+$/g, '')
+}
+
+function distributeDeclaredQuantities(totalQuantity: number, placementCount: number) {
+  const safePlacementCount = Math.max(1, placementCount)
+  const base = Math.floor(totalQuantity / safePlacementCount)
+  let remainder = totalQuantity % safePlacementCount
+
+  return Array.from({ length: safePlacementCount }, () => {
+    const next = base + (remainder > 0 ? 1 : 0)
+    if (remainder > 0) {
+      remainder -= 1
+    }
+    return next
+  })
+}
+
+function expandImportedBoxNumbers(rawBoxNo: string, placementCount: number, fallbackSeed: string) {
+  const fallback = Array.from(
+    { length: Math.max(1, placementCount) },
+    (_, index) => `${fallbackSeed}-${index + 1}`,
+  )
+  const normalized = (rawBoxNo ?? '').trim()
+
+  if (!normalized) {
+    return fallback
+  }
+
+  const directParts = normalized
+    .split(/[、,，/]/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+
+  let expandedParts: string[] = []
+
+  for (const part of directParts.length > 0 ? directParts : [normalized]) {
+    const rangeMatch = part.match(/^([A-Za-z]*)(\d+)\s*-\s*([A-Za-z]*)(\d+)$/)
+    if (!rangeMatch) {
+      expandedParts.push(part)
+      continue
+    }
+
+    const [, startPrefix, startRaw, endPrefix, endRaw] = rangeMatch
+    const prefix = startPrefix || endPrefix
+    if ((startPrefix && endPrefix && startPrefix !== endPrefix) || !prefix) {
+      expandedParts.push(part)
+      continue
+    }
+
+    const start = Number(startRaw)
+    const end = Number(endRaw)
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+      expandedParts.push(part)
+      continue
+    }
+
+    const width = Math.max(startRaw.length, endRaw.length)
+    for (let current = start; current <= end; current += 1) {
+      expandedParts.push(`${prefix}${String(current).padStart(width, '0')}`)
+    }
+  }
+
+  if (expandedParts.length === placementCount) {
+    return expandedParts
+  }
+
+  if (expandedParts.length === 1 && placementCount > 1) {
+    return fallback.map((_, index) => `${expandedParts[0]}-${index + 1}`)
+  }
+
+  if (expandedParts.length > placementCount) {
+    return expandedParts.slice(0, placementCount)
+  }
+
+  return [...expandedParts, ...fallback.slice(expandedParts.length)]
 }
 
 function round(value: number, digits: number) {

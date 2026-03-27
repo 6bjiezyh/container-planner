@@ -129,6 +129,7 @@ export function ScenePreview({
               length={scene.packingSpace.length}
               width={scene.packingSpace.width}
               x={scene.packingSpace.x}
+              z={scene.packingSpace.z}
             />
             {visibleBoxes.map((box) => (
               <group key={box.id} position={[box.position.x, box.position.y, box.position.z]}>
@@ -193,14 +194,16 @@ function RemainingSpaceFrame({
   width,
   height,
   x,
+  z,
 }: {
   length: number
   width: number
   height: number
   x: number
+  z: number
 }) {
   return (
-    <group position={[x + length / 2, height / 2, 0]}>
+    <group position={[x + length / 2, height / 2, z]}>
       <mesh>
         <boxGeometry args={[length, height, width]} />
         <meshBasicMaterial color="#d93232" transparent opacity={0.12} />

@@ -158,6 +158,81 @@ describe('container planner rules', () => {
     expect(plan.placements.map((placement) => placement.declaredQuantity)).toEqual([5, 5])
   })
 
+  it('groups multiple outer-box rows with the same physical box number into one mixed box placement', () => {
+    const plan = calculateContainerPlan({
+      containerType: '20GP',
+      items: [
+        {
+          id: 'SKU-136',
+          label: '美点12头光级',
+          piNo: '136',
+          productCode: '136',
+          boxNo: '3',
+          boxCount: 1,
+          lengthCm: 37,
+          widthCm: 27,
+          heightCm: 28,
+          quantity: 10,
+          packagingType: 'none',
+          dimensionInputMode: 'outer_box',
+          fragile: false,
+          cartonEnabled: false,
+          cartonThicknessCm: 0,
+          foamEnabled: false,
+          foamThicknessCm: 0,
+          woodThicknessCm: 0,
+        },
+        {
+          id: 'SKU-137',
+          label: '美点12头牙级',
+          piNo: '137',
+          productCode: '137',
+          boxNo: '3',
+          boxCount: 1,
+          lengthCm: 37,
+          widthCm: 27,
+          heightCm: 28,
+          quantity: 10,
+          packagingType: 'none',
+          dimensionInputMode: 'outer_box',
+          fragile: false,
+          cartonEnabled: false,
+          cartonThicknessCm: 0,
+          foamEnabled: false,
+          foamThicknessCm: 0,
+          woodThicknessCm: 0,
+        },
+        {
+          id: 'SKU-139',
+          label: '美点8头梅花形光级',
+          piNo: '139',
+          productCode: '139',
+          boxNo: '3',
+          boxCount: 1,
+          lengthCm: 37,
+          widthCm: 27,
+          heightCm: 28,
+          quantity: 8,
+          packagingType: 'none',
+          dimensionInputMode: 'outer_box',
+          fragile: false,
+          cartonEnabled: false,
+          cartonThicknessCm: 0,
+          foamEnabled: false,
+          foamThicknessCm: 0,
+          woodThicknessCm: 0,
+        },
+      ],
+    })
+
+    expect(plan.summary.totalUnits).toBe(1)
+    expect(plan.placements).toHaveLength(1)
+    expect(plan.placements[0].boxNo).toBe('3')
+    expect(plan.placements[0].declaredQuantity).toBe(28)
+    expect(plan.placements[0].contents).toHaveLength(3)
+    expect(plan.placements[0].contents.map((entry) => entry.piNo)).toEqual(['136', '137', '139'])
+  })
+
   it('estimates calculation workload from box count for outer-box rows', () => {
     expect(
       estimatePlacementCount([

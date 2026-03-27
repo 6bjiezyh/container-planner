@@ -28,6 +28,7 @@ export interface SceneData {
     width: number
     height: number
     x: number
+    z: number
     label: string
     dimensionLabel: string
   }
@@ -52,6 +53,9 @@ export function createSceneData(plan: ContainerPlan): SceneData {
       width: plan.packingSpace.widthCm * scale,
       height: plan.packingSpace.heightCm * scale,
       x: -5 + plan.packingSpace.originXCm * scale,
+      z:
+        -((plan.container.widthCm * scale) / 2) +
+        (plan.packingSpace.widthCm * scale) / 2,
       label: plan.packingSpace.label,
       dimensionLabel: `${plan.packingSpace.lengthCm}×${plan.packingSpace.widthCm}×${plan.packingSpace.heightCm}cm`,
     },

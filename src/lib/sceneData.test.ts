@@ -69,5 +69,8 @@ describe('scene data conversion', () => {
     expect(scene.packingSpace.dimensionLabel).toBe('200×200×200cm')
     expect(scene.packingSpace.x).toBeGreaterThan(-5)
     expect(scene.boxes[0].position.x).toBeGreaterThan(scene.packingSpace.x)
+    expect(scene.packingSpace.z).toBeLessThan(0)
+    expect(scene.boxes[0].position.z).toBeGreaterThan(scene.packingSpace.z - scene.packingSpace.width / 2)
+    expect(scene.boxes[0].position.z).toBeLessThan(scene.packingSpace.z + scene.packingSpace.width / 2)
   })
 })

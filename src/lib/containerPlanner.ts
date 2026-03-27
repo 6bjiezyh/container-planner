@@ -62,6 +62,17 @@ export interface PackingSpace extends Dimension3D {
   label: string
 }
 
+export interface BoxContentEntry {
+  entryKey: string
+  itemId: string
+  label: string
+  piNo: string
+  productCode: string
+  declaredQuantity: number
+  supplierFlag: SupplierFlag
+  fragile: boolean
+}
+
 export interface Placement {
   itemId: string
   label: string
@@ -74,6 +85,7 @@ export interface Placement {
   boxCount: number
   declaredQuantity: number
   piNo: string
+  contents: BoxContentEntry[]
   packagingVisualType: PackagingVisualType
   lengthCm: number
   widthCm: number
@@ -115,6 +127,7 @@ export interface ExpandedUnitPreview {
   boxCount: number
   declaredQuantity: number
   piNo: string
+  contents: BoxContentEntry[]
   packagingVisualType: PackagingVisualType
   bare: Dimension3D
   packed: Dimension3D
@@ -171,6 +184,7 @@ export interface PackingSequenceStep {
   boxCount: number
   declaredQuantity: number
   piNo: string
+  contents: BoxContentEntry[]
   packagingVisualType: PackagingVisualType
   packed: Dimension3D
   note: string
@@ -481,9 +495,22 @@ type ExpandedUnit = {
   boxCount: number
   declaredQuantity: number
   piNo: string
+  contents: BoxContentEntry[]
   packagingVisualType: PackagingVisualType
   bare: Dimension3D
   packed: Dimension3D
+}
+
+type OuterBoxGroupEntry = {
+  item: ItemInput
+  declaredQuantity: number
+  resolved: ReturnType<typeof resolveItemDimensions>
+  packagingVisualType: PackagingVisualType
+}
+
+type OuterBoxGroup = {
+  boxNo: string
+  entries: OuterBoxGroupEntry[]
 }
 
 type PackingCandidate = {
@@ -504,6 +531,7 @@ type CandidatePlacement = {
   boxCount: number
   declaredQuantity: number
   piNo: string
+  contents: BoxContentEntry[]
   packagingVisualType: PackagingVisualType
   lengthCm: number
   widthCm: number
@@ -624,6 +652,7 @@ export function getExpandedUnitPreview(items: ItemInput[]): ExpandedUnitPreview[
     boxCount: unit.boxCount,
     declaredQuantity: unit.declaredQuantity,
     piNo: unit.piNo,
+    contents: unit.contents,
     packagingVisualType: unit.packagingVisualType,
     bare: unit.bare,
     packed: unit.packed,
@@ -654,6 +683,7 @@ export function generatePackingSequence(
       boxCount: unit.boxCount,
       declaredQuantity: unit.declaredQuantity,
       piNo: unit.piNo,
+      contents: unit.contents,
       packagingVisualType: unit.packagingVisualType,
       packed: unit.packed,
       note: buildPackingNote(unit),
@@ -661,11 +691,7 @@ export function generatePackingSequence(
 }
 
 export function estimatePlacementCount(items: ItemInput[]) {
-  return items.reduce((sum, item) => {
-    const placementCount =
-      item.dimensionInputMode === 'outer_box' ? Math.max(1, item.boxCount ?? 1) : item.quantity
-    return sum + placementCount
-  }, 0)
+  return expandUnits(items).length
 }
 
 export function recommendContainerPlans({
@@ -726,6 +752,7 @@ export function generateContainerPlanCandidatesForUnits({
     boxCount: unit.boxCount,
     declaredQuantity: unit.declaredQuantity,
     piNo: unit.piNo,
+    contents: unit.contents,
     packagingVisualType: unit.packagingVisualType,
     bare: unit.bare,
     packed: unit.packed,
@@ -770,6 +797,7 @@ export function calculateContainerPlanWithSequenceForUnits({
         boxCount: unit.boxCount,
         declaredQuantity: unit.declaredQuantity,
         piNo: unit.piNo,
+        contents: unit.contents,
         packagingVisualType: unit.packagingVisualType,
         bare: unit.bare,
         packed: unit.packed,
@@ -967,35 +995,169 @@ export function generateContainerPlanCandidates({
 
 function expandUnits(items: ItemInput[]): ExpandedUnit[] {
   const units: ExpandedUnit[] = []
+  const outerBoxGroups = new Map<string, OuterBoxGroup>()
 
   for (const item of items) {
+    const resolved = resolveItemDimensions(item)
+    const packagingVisualType = getPackagingVisualType(item)
     const placementCount =
       item.dimensionInputMode === 'outer_box' ? Math.max(1, item.boxCount ?? 1) : item.quantity
     const distributedQuantities = distributeDeclaredQuantities(item.quantity, placementCount)
     const boxNumbers = expandBoxNumbers(item.boxNo, placementCount, item.id)
 
+    if (item.dimensionInputMode === 'outer_box') {
+      for (let index = 0; index < placementCount; index += 1) {
+        const boxNo = boxNumbers[index] ?? `${item.id}-${index + 1}`
+        const boxKey = normalizeBoxKey(boxNo, item.id, index)
+        const group = outerBoxGroups.get(boxKey) ?? {
+          boxNo,
+          entries: [],
+        }
+
+        group.entries.push({
+          item,
+          declaredQuantity: distributedQuantities[index] ?? item.quantity,
+          resolved,
+          packagingVisualType,
+        })
+
+        outerBoxGroups.set(boxKey, group)
+      }
+
+      continue
+    }
+
     for (let index = 0; index < placementCount; index += 1) {
-      const resolved = resolveItemDimensions(item)
-      units.push({
-        itemId: item.id,
-        label: item.label,
-        index,
-        fragile: item.fragile,
-        supplierFlag: item.supplierFlag ?? 'self',
-        singleWeightKg: item.singleWeightKg ?? 1,
-        productCode: item.productCode ?? '',
-        boxNo: boxNumbers[index] ?? `${item.id}-${index + 1}`,
-        boxCount: item.boxCount ?? 1,
-        declaredQuantity: distributedQuantities[index] ?? item.quantity,
-        piNo: item.piNo ?? '',
-        packagingVisualType: getPackagingVisualType(item),
-        bare: resolved.input,
-        packed: resolved.packed,
-      })
+      const declaredQuantity = distributedQuantities[index] ?? 1
+      units.push(
+        createExpandedUnit({
+          itemId: item.id,
+          label: item.label,
+          index,
+          fragile: item.fragile,
+          supplierFlag: item.supplierFlag ?? 'self',
+          singleWeightKg: item.singleWeightKg ?? 1,
+          productCode: item.productCode ?? '',
+          boxNo: boxNumbers[index] ?? `${item.id}-${index + 1}`,
+          boxCount: 1,
+          declaredQuantity,
+          piNo: item.piNo ?? '',
+          contents: [
+            createBoxContentEntry({
+              item,
+              declaredQuantity,
+              entryIndex: index,
+            }),
+          ],
+          packagingVisualType,
+          bare: resolved.input,
+          packed: resolved.packed,
+        }),
+      )
     }
   }
 
+  for (const group of outerBoxGroups.values()) {
+    units.push(buildOuterBoxGroupedUnit(group, units.length))
+  }
+
   return units
+}
+
+function createExpandedUnit(unit: ExpandedUnit): ExpandedUnit {
+  return unit
+}
+
+function createBoxContentEntry({
+  item,
+  declaredQuantity,
+  entryIndex,
+}: {
+  item: ItemInput
+  declaredQuantity: number
+  entryIndex: number
+}): BoxContentEntry {
+  return {
+    entryKey: `${item.id}-${item.piNo || item.productCode || item.label}-${entryIndex}`,
+    itemId: item.id,
+    label: item.label,
+    piNo: item.piNo ?? '',
+    productCode: item.productCode ?? '',
+    declaredQuantity,
+    supplierFlag: item.supplierFlag ?? 'self',
+    fragile: item.fragile,
+  }
+}
+
+function normalizeBoxKey(boxNo: string | undefined, itemId: string, index: number) {
+  const normalized = (boxNo ?? '').trim()
+  return normalized || `${itemId}-${index + 1}`
+}
+
+function buildOuterBoxGroupedUnit(group: OuterBoxGroup, index: number): ExpandedUnit {
+  const contents = group.entries.map((entry, entryIndex) =>
+    createBoxContentEntry({
+      item: entry.item,
+      declaredQuantity: entry.declaredQuantity,
+      entryIndex,
+    }),
+  )
+  const labels = [...new Set(contents.map((entry) => entry.label).filter(Boolean))]
+  const piNos = [...new Set(contents.map((entry) => entry.piNo).filter(Boolean))]
+  const productCodes = [...new Set(contents.map((entry) => entry.productCode).filter(Boolean))]
+  const declaredQuantity = contents.reduce((sum, entry) => sum + entry.declaredQuantity, 0)
+  const fragile = contents.some((entry) => entry.fragile)
+  const supplierFlag = contents.every((entry) => entry.supplierFlag === 'other') ? 'other' : 'self'
+  const singleWeightKg = group.entries.reduce(
+    (sum, entry) => sum + (entry.item.singleWeightKg ?? 1),
+    0,
+  )
+  const packagingVisualType = group.entries.reduce<PackagingVisualType>((current, entry) => {
+    return getPackagingPriority(entry.packagingVisualType) > getPackagingPriority(current)
+      ? entry.packagingVisualType
+      : current
+  }, 'none')
+  const bare = group.entries.reduce<Dimension3D>(
+    (current, entry) => ({
+      lengthCm: Math.max(current.lengthCm, entry.resolved.input.lengthCm),
+      widthCm: Math.max(current.widthCm, entry.resolved.input.widthCm),
+      heightCm: Math.max(current.heightCm, entry.resolved.input.heightCm),
+    }),
+    { lengthCm: 0, widthCm: 0, heightCm: 0 },
+  )
+  const packed = group.entries.reduce<Dimension3D>(
+    (current, entry) => ({
+      lengthCm: Math.max(current.lengthCm, entry.resolved.packed.lengthCm),
+      widthCm: Math.max(current.widthCm, entry.resolved.packed.widthCm),
+      heightCm: Math.max(current.heightCm, entry.resolved.packed.heightCm),
+    }),
+    { lengthCm: 0, widthCm: 0, heightCm: 0 },
+  )
+  const boxNo = (group.boxNo ?? '').trim()
+  const label =
+    labels.length === 1
+      ? labels[0]
+      : boxNo
+        ? `混装箱 ${boxNo}`
+        : '混装箱'
+
+  return createExpandedUnit({
+    itemId: boxNo ? `BOX-${boxNo}` : `BOX-${index + 1}`,
+    label,
+    index,
+    fragile,
+    supplierFlag,
+    singleWeightKg,
+    productCode: productCodes.length === 1 ? productCodes[0] : '',
+    boxNo,
+    boxCount: 1,
+    declaredQuantity,
+    piNo: piNos.length === 1 ? piNos[0] : '',
+    contents,
+    packagingVisualType,
+    bare,
+    packed,
+  })
 }
 
 function distributeDeclaredQuantities(totalQuantity: number, placementCount: number) {
@@ -1086,6 +1248,10 @@ function getPackagingPriority(type: PackagingVisualType) {
 
 function buildPackingNote(unit: ExpandedUnit) {
   const parts: string[] = []
+
+  if (unit.contents.length > 1) {
+    parts.push(`混装箱，内含 ${unit.contents.length} 种产品`)
+  }
 
   if (unit.packagingVisualType === 'wood_crate') parts.push('先打木箱')
   else if (unit.packagingVisualType === 'wood_frame') parts.push('先打木架')
@@ -1430,6 +1596,7 @@ function findBestPlacement({
         boxCount: unit.boxCount,
         declaredQuantity: unit.declaredQuantity,
         piNo: unit.piNo,
+        contents: unit.contents,
         packagingVisualType: unit.packagingVisualType,
         ...orientation,
         xCm: anchor.xCm,
